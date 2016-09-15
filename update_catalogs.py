@@ -5,12 +5,15 @@
 # See the LICENSE file for details.
 
 import logging
-import os
+from random import Random
 
 from src import config
 from src import util
-from src.catalog import ArchLinuxCatalog, CygwinCatalog, DebianCatalog, FreeBSDCatalog, HomebrewCatalog, NetBSDCatalog, OpenBSDCatalog, RedHatCatalog
+from src.catalog import (ArchLinuxCatalog, CygwinCatalog, DebianCatalog,
+                         FreeBSDCatalog, HomebrewCatalog, NetBSDCatalog,
+                         OpenBSDCatalog, RedHatCatalog)
 from src.catalog_set import CatalogSet
+from src.distfile import IO
 from src.repository import Repository
 
 # Setup logging
@@ -23,14 +26,7 @@ DIR_DISTFILES = '/usr/local/www/nuxi.nl/public/distfiles/third_party'
 DIR_TMP = '/usr/local/www/nuxi.nl/repo.tmp'
 
 # Final location of the catalogs.
-DIR_ARCHLINUX_CATALOG = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/archlinux'
-DIR_CYGWIN_CATALOG = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/cygwin'
-DIR_DEBIAN_CATALOG = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/debian'
-DIR_FREEBSD_CATALOG = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/freebsd'
-DIR_HOMEBREW_CATALOG = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/homebrew'
-DIR_NETBSD_CATALOG = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/netbsd'
-DIR_OPENBSD_CATALOG = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/openbsd'
-DIR_REDHAT_CATALOG = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/redhat'
+DIR_CATALOG_PARENT = '/usr/local/www/nuxi.nl/public/distfiles/cloudabi-ports/'
 
 # Location of the catalog signing keys.
 ARCHLINUX_PRIVATE_KEY = '31344B15'
@@ -42,68 +38,88 @@ REDHAT_PRIVATE_KEY = '31344B15'
 # The Homebrew repository needs to know its own URL.
 HOMEBREW_URL = 'https://nuxi.nl/distfiles/cloudabi-ports/homebrew/'
 
-# Zap the old temporary directory.
-util.remove_and_make_dir(DIR_TMP)
 
-# Parse all of the BUILD rules.
-repo = Repository(os.path.join(DIR_TMP, 'install'))
-# repo = Repository(os.path.join(os.getcwd(), '_obj/install'))
-for filename in util.walk_files(os.path.join(os.getcwd(), 'packages')):
-    if os.path.basename(filename) == 'BUILD':
-        repo.add_build_file(filename, DIR_DISTFILES)
-target_packages = repo.get_target_packages()
+class OS:
+    [archlinux, cygwin, debian,
+     freebsd, homebrew, netbsd,
+     openbsd, redhat] = (
+         'archlinux cygwin debian '
+         'freebsd homebrew netbsd '
+         'openbsd redhat').split()
 
-# The catalogs that we want to create.
-archlinux_path = os.path.join(DIR_TMP, 'archlinux')
-archlinux_catalog = ArchLinuxCatalog(DIR_ARCHLINUX_CATALOG, archlinux_path)
-cygwin_path = os.path.join(DIR_TMP, 'cygwin')
-cygwin_catalog = CygwinCatalog(DIR_CYGWIN_CATALOG, cygwin_path)
-debian_path = os.path.join(DIR_TMP, 'debian')
-debian_catalog = DebianCatalog(DIR_DEBIAN_CATALOG, debian_path)
-freebsd_path = os.path.join(DIR_TMP, 'freebsd')
-freebsd_catalog = FreeBSDCatalog(DIR_FREEBSD_CATALOG, freebsd_path)
-homebrew_path = os.path.join(DIR_TMP, 'homebrew')
-homebrew_catalog = HomebrewCatalog(DIR_HOMEBREW_CATALOG, homebrew_path,
-                                   HOMEBREW_URL)
-netbsd_path = os.path.join(DIR_TMP, 'netbsd')
-netbsd_catalog = NetBSDCatalog(DIR_NETBSD_CATALOG, netbsd_path)
-openbsd_path = os.path.join(DIR_TMP, 'openbsd')
-openbsd_catalog = OpenBSDCatalog(DIR_OPENBSD_CATALOG, openbsd_path)
-redhat_path = os.path.join(DIR_TMP, 'redhat')
-redhat_catalog = RedHatCatalog(DIR_REDHAT_CATALOG, redhat_path)
 
-# Build all packages.
-catalog_set = CatalogSet({
-    archlinux_catalog, cygwin_catalog, debian_catalog, freebsd_catalog,
-    homebrew_catalog, netbsd_catalog, openbsd_catalog, redhat_catalog,
-})
-for package in target_packages.values():
-    catalog_set.package_and_insert(package, os.path.join(DIR_TMP, 'catalog'))
+def main(argv, cwd):
+    # Zap the old temporary directory.
+    util.remove_and_make_dir(cwd / DIR_TMP)
 
-archlinux_catalog.finish(ARCHLINUX_PRIVATE_KEY)
-cygwin_catalog.finish(CYGWIN_PRIVATE_KEY)
-debian_catalog.finish(DEBIAN_PRIVATE_KEY)
-freebsd_catalog.finish(FREEBSD_PRIVATE_KEY)
-redhat_catalog.finish(REDHAT_PRIVATE_KEY)
+    # Parse all of the BUILD rules.
+    rng = Random(x=1)
+    io = IO(urlopen=None, subprocess=None, random=rng)
+    repo = Repository(cwd / DIR_TMP / 'install', io)
+    # repo = Repository(os.path.join(os.getcwd(), '_obj/install'))
+    for file in util.walk_files(cwd / 'packages'):
+        if file.name == 'BUILD':
+            repo.add_build_file(file, cwd / DIR_DISTFILES)
 
-# Finish up and put the new catalogs in place.
-os.rename(DIR_ARCHLINUX_CATALOG, os.path.join(DIR_TMP, 'archlinux.old'))
-os.rename(archlinux_path, DIR_ARCHLINUX_CATALOG)
-os.rename(DIR_CYGWIN_CATALOG, os.path.join(DIR_TMP, 'cygwin.old'))
-os.rename(cygwin_path, DIR_CYGWIN_CATALOG)
-os.rename(DIR_DEBIAN_CATALOG, os.path.join(DIR_TMP, 'debian.old'))
-os.rename(debian_path, DIR_DEBIAN_CATALOG)
-os.rename(DIR_FREEBSD_CATALOG, os.path.join(DIR_TMP, 'freebsd.old'))
-os.rename(freebsd_path, DIR_FREEBSD_CATALOG)
-os.rename(DIR_HOMEBREW_CATALOG, os.path.join(DIR_TMP, 'homebrew.old'))
-os.rename(homebrew_path, DIR_HOMEBREW_CATALOG)
-os.rename(DIR_NETBSD_CATALOG, os.path.join(DIR_TMP, 'netbsd.old'))
-os.rename(netbsd_path, DIR_NETBSD_CATALOG)
-os.rename(DIR_OPENBSD_CATALOG, os.path.join(DIR_TMP, 'openbsd.old'))
-os.rename(openbsd_path, DIR_OPENBSD_CATALOG)
-os.rename(DIR_REDHAT_CATALOG, os.path.join(DIR_TMP, 'redhat.old'))
-os.rename(redhat_path, DIR_REDHAT_CATALOG)
+    target_packages = repo.get_target_packages()
 
-# Zap the temporary directories.
-util.remove(config.DIR_BUILDROOT)
-util.remove(DIR_TMP)
+    published = cwd / DIR_CATALOG_PARENT
+    workspace = cwd / DIR_TMP
+
+    # The catalogs that we want to create.
+    archlinux_catalog = ArchLinuxCatalog(published / OS.archlinux,
+                                         workspace / OS.archlinux)
+    cygwin_catalog = CygwinCatalog(published / OS.cygwin,
+                                   workspace / OS.cygwin)
+    debian_catalog = DebianCatalog(published / OS.debian,
+                                   workspace / OS.debian)
+    freebsd_catalog = FreeBSDCatalog(published / OS.freebsd,
+                                     workspace / OS.freebsd)
+    homebrew_catalog = HomebrewCatalog(published / OS.homebrew,
+                                       workspace / OS.homebrew,
+                                       HOMEBREW_URL)
+    netbsd_catalog = NetBSDCatalog(published / OS.netbsd,
+                                   workspace / OS.netbsd)
+    openbsd_catalog = OpenBSDCatalog(published / OS.openbsd,
+                                     workspace / OS.openbsd)
+    redhat_catalog = RedHatCatalog(published / OS.redhat,
+                                   workspace / OS.redhat)
+
+    # Build all packages.
+    catalog_set = CatalogSet({
+        archlinux_catalog, cygwin_catalog, debian_catalog, freebsd_catalog,
+        homebrew_catalog, netbsd_catalog, openbsd_catalog, redhat_catalog,
+    })
+    for package in target_packages.values():
+        catalog_set.package_and_insert(package, cwd / DIR_TMP / 'catalog')
+
+    archlinux_catalog.finish(ARCHLINUX_PRIVATE_KEY)
+    cygwin_catalog.finish(CYGWIN_PRIVATE_KEY)
+    debian_catalog.finish(DEBIAN_PRIVATE_KEY)
+    freebsd_catalog.finish(FREEBSD_PRIVATE_KEY)
+    redhat_catalog.finish(REDHAT_PRIVATE_KEY)
+
+    # Finish up and put the new catalogs in place.
+    for os_name in OS.names:
+        pub = published / os_name
+        work = workspace / os_name
+        pub.rename(work.with_name(os_name + '.old'))
+        work.rename(pub)
+
+    # Zap the temporary directories.
+    util.remove(cwd / config.DIR_BUILDROOT)
+    util.remove(cwd / DIR_TMP)
+
+
+if __name__ == '__main__':
+    def _script():
+        from os import link as os_link
+        from pathlib import PosixPath
+        from sys import argv
+        import shutil
+
+        shutil_path = util.mix_shutil_path(PosixPath, shutil, os_link)
+        cwd = shutil_path('.')
+        main(argv[:], cwd)
+
+    _script()

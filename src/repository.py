@@ -3,9 +3,6 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
-import os
-import random
-
 from . import config
 
 from .distfile import Distfile
@@ -15,8 +12,9 @@ from .version import SimpleVersion
 
 class Repository:
 
-    def __init__(self, install_directory):
+    def __init__(self, install_directory, io):
         self._install_directory = install_directory
+        self._io = io
 
         self._distfiles = {}
         self._host_packages = {}
@@ -43,28 +41,28 @@ class Repository:
                     break
 
             # Automatically add patches if none are given.
-            dirname = os.path.dirname(path)
+            pkg_dir = path.parent
             if 'patches' not in distfile:
-                distfile['patches'] = (name[6:]
-                                       for name in os.listdir(dirname)
-                                       if name.startswith('patch-'))
+                distfile['patches'] = (p.name[6:]
+                                       for p in pkg_dir.iterdir()
+                                       if p.name.startswith('patch-'))
             if 'unsafe_string_sources' not in distfile:
                 distfile['unsafe_string_sources'] = frozenset()
 
             # Turn patch filenames into full paths.
-            distfile['patches'] = {os.path.join(dirname, 'patch-' + patch)
+            distfile['patches'] = {pkg_dir / ('patch-' + patch)
                                    for patch in distfile['patches']}
 
             if name in self._distfiles:
                 raise Exception('%s is redeclaring distfile %s' % (path, name))
             self._distfiles[name] = Distfile(
-                distdir=distdir,
+                distdir=distdir, io=self._io,
                 **distfile
             )
 
         def op_host_package(**kwargs):
             package = kwargs
-            package['resource_directory'] = os.path.dirname(path)
+            package['resource_directory'] = str(path.parent.resolve())
             name = package['name']
             if name in self._deferred_host_packages:
                 raise Exception('%s is redeclaring packages %s' % (path, name))
@@ -72,7 +70,7 @@ class Repository:
 
         def op_package(**kwargs):
             package = kwargs
-            package['resource_directory'] = os.path.dirname(path)
+            package['resource_directory'] = str(path.parent.resolve())
             name = package['name']
             for arch in config.ARCHITECTURES:
                 if (name, arch) in self._deferred_target_packages:
@@ -115,13 +113,15 @@ class Repository:
             'sites_sourceforge': op_sites_sourceforge,
         }
 
-        with open(path, 'r') as f:
+        with path.open('r') as f:
             exec(f.read(), identifiers, identifiers)
 
     def get_distfiles(self):
         return self._distfiles.values()
 
     def get_target_packages(self):
+        io = self._io
+
         # Create host packages that haven't been instantiated yet.
         # This implicitly checks for dependency loops.
         def get_host_package(name):
@@ -141,9 +141,9 @@ class Repository:
                     del package['lib_depends']
                 package['version'] = SimpleVersion(package['version'])
                 self._host_packages[name] = HostPackage(
-                    install_directory=os.path.join(
-                        self._install_directory,
-                        'host',
+                    install_directory=(
+                        self._install_directory /
+                        'host' /
                         name),
                     distfiles=self._distfiles,
                     build_depends=build_depends,
@@ -153,7 +153,7 @@ class Repository:
 
         while self._deferred_host_packages:
             get_host_package(
-                random.sample(
+                io.random.sample(
                     self._deferred_host_packages.keys(),
                     1)[0])
 
@@ -172,8 +172,8 @@ class Repository:
                     del package['lib_depends']
                 package['version'] = SimpleVersion(package['version'])
                 self._target_packages[(name, arch)] = TargetPackage(
-                    install_directory=os.path.join(
-                        self._install_directory, arch, name),
+                    install_directory=(
+                        self._install_directory / arch / name),
                     arch=arch,
                     distfiles=self._distfiles,
                     host_packages=self._host_packages,
@@ -183,7 +183,7 @@ class Repository:
 
         while self._deferred_target_packages:
             get_target_package(
-                *random.sample(
+                *io.random.sample(
                     self._deferred_target_packages.keys(), 1)[0])
 
         # Generate per-architecture 'everything' meta packages. These
@@ -192,8 +192,8 @@ class Repository:
         packages = self._target_packages.copy()
         for arch in config.ARCHITECTURES:
             packages[('everything', arch)] = TargetPackage(
-                install_directory=os.path.join(self._install_directory, arch,
-                                               'everything'),
+                install_directory=(self._install_directory /
+                                   arch / 'everything'),
                 arch=arch,
                 name='everything',
                 version=SimpleVersion('1.0'),

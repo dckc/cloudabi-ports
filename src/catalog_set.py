@@ -3,8 +3,6 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
-import os
-
 from . import util
 from .version import FullVersion
 

@@ -3,24 +3,28 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
+from collections import namedtuple
+from pathlib import PurePosixPath
+from urllib.error import URLError
+from shutil import copyfileobj
 import logging
-import os
-import random
-import shutil
-import subprocess
-import urllib
 
 from . import config
 from . import util
 
 log = logging.getLogger(__name__)
 
+
+class IO(namedtuple('IO', 'urlopen subprocess random'.split())):
+    pass
+
+
 class Distfile:
 
-    def __init__(self, distdir, name, checksum, master_sites, patches,
+    def __init__(self, distdir, io, name, checksum, master_sites, patches,
                  unsafe_string_sources):
         for patch in patches:
-            if not os.path.isfile(patch):
+            if not patch.exists():
                 raise Exception('Patch %s does not exist' % patch)
 
         self._distdir = distdir
@@ -28,27 +32,28 @@ class Distfile:
         self._checksum = checksum
         self._patches = patches
         self._unsafe_string_sources = unsafe_string_sources
-        self._pathname = os.path.join(distdir, self._name)
+        self._pathname = distdir / self._name
+        self._io = io
 
         # Compute distfile URLs based on the provided list of sites.
         # Also add fallback URLs in case the master sites are down.
         self._urls = {
-            site + os.path.basename(self._name) for site in master_sites
+            site + PurePosixPath(self._name).name for site in master_sites
         } | {
             site + self._name for site in config.FALLBACK_MIRRORS
         }
 
     @staticmethod
-    def _apply_patch(patch, target):
+    def _apply_patch(patch, target, subprocess):
         # Automatically determine the patchlevel by taking a look at the
         # first filename in the patch.
         patchlevel = 0
-        with open(patch, 'rb') as f:
+        with patch.open('rb') as f:
             for l in f.readlines():
                 if l.startswith(b'--- '):
                     filename = str(l[4:-1].split(b'\t', 1)[0], encoding='ASCII')
                     while True:
-                        if os.path.exists(os.path.join(target, filename)):
+                        if (target / filename).exists():
                             # Correct patchlevel determined.
                             break
                         # Increment patchlevel once more.
@@ -63,35 +68,39 @@ class Distfile:
                     break
 
         # Apply the patch.
-        with open(patch) as f:
+        with patch.open() as f:
             subprocess.check_call(
-                ['patch', '-d', target, '-tsp%d' % patchlevel], stdin=f)
+                ['patch', '-d', str(target), '-tsp%d' % patchlevel], stdin=f)
 
         # Delete .orig files that patch leaves behind.
         for path in util.walk_files(target):
-            if path.endswith('.orig'):
-                os.unlink(path)
+            if path.suffix == '.orig':
+                path.unlink()
 
     def _extract_unpatched(self, target):
+        io = self._io
         # Fetch and extract tarball.
         self._fetch()
-        tar = os.path.join(config.DIR_BUILDROOT, 'bin/bsdtar')
-        if not os.path.exists(tar):
+        # cheat a bit: presume target.pathjoin(abs_path) works
+        tar = target / config.DIR_BUILDROOT / 'bin/bsdtar'
+        if not tar.exists():
             tar = 'tar'
         util.make_dir(target)
-        subprocess.check_call([tar, '-xC', target, '-f', self._pathname])
+        io.subprocess.check_call(
+            map(str, [tar, '-xC', target, '-f', self._pathname]))
 
         # Remove leading directory names.
         while True:
-            entries = os.listdir(target)
+            entries = list(target.iterdir())
             if len(entries) != 1:
                 return target
-            subdir = os.path.join(target, entries[0])
-            if not os.path.isdir(subdir):
+            subdir = entries[0]
+            if not subdir.is_dir():
                 return target
             target = subdir
 
     def _fetch(self):
+        io = self._io
         for i in range(10):
             log.info('CHECKSUM %s', self._pathname)
             # Validate the existing file on disk.
@@ -101,50 +110,53 @@ class Distfile:
             except FileNotFoundError as e:
                 log.warning(e)
 
-            url = random.sample(self._urls, 1)[0]
+            url = io.random.sample(self._urls, 1)[0]
             log.info('FETCH %s', url)
             try:
                 util.make_parent_dir(self._pathname)
-                with util.unsafe_fetch(url) as fin, open(self._pathname, 'wb') as fout:
-                    shutil.copyfileobj(fin, fout)
+                with util.unsafe_fetch(url, io.urlopen) as fin, self._pathname.open('wb') as fout:
+                    copyfileobj(fin, fout)
             except ConnectionResetError as e:
                 log.warning(e)
-            except urllib.error.URLError as e:
+            except URLError as e:
                 log.warning(e)
         raise Exception('Failed to fetch %s' % self._name)
 
     def extract(self, target):
+        io = self._io
         target = self._extract_unpatched(target)
         # Apply patches.
         for patch in self._patches:
-            self._apply_patch(patch, target)
+            self._apply_patch(patch, target, io.subprocess)
         # Add markers to sources that depend on unsafe string sources.
         for filename in self._unsafe_string_sources:
-          path = os.path.join(target, filename)
-          with open(path, 'rb') as fin, open(path + '.new', 'wb') as fout:
-            fout.write(bytes('#define _CLOUDLIBC_UNSAFE_STRING_FUNCTIONS\n',
-                             encoding='ASCII'))
-            fout.write(fin.read())
-            os.rename(path + '.new', path)
+            path = target / filename
+            with path.open('rb') as fin, (path + '.new').open('wb') as fout:
+                fout.write(
+                    bytes('#define _CLOUDLIBC_UNSAFE_STRING_FUNCTIONS\n',
+                          encoding='ASCII'))
+                fout.write(fin.read())
+            (path + '.new').rename(path)
         return target
 
     def fixup_patches(self, tmpdir):
+        io = self._io
         if not self._patches:
             return
         # Extract one copy of the code to diff against.
         util.remove(tmpdir)
-        orig_dir = self._extract_unpatched(os.path.join(tmpdir, 'orig'))
+        orig_dir = self._extract_unpatched(tmpdir / 'orig')
         for path in util.walk_files(orig_dir):
-            if path.endswith('.orig'):
-                os.unlink(path)
+            if path.suffix == '.orig':
+                path.unlink()
 
         for patch in sorted(self._patches):
             log.info('FIXUP %s', patch)
             # Apply individual patches to the code.
-            patched_dir = os.path.join(tmpdir, 'patched')
+            patched_dir = tmpdir / 'patched'
             util.remove(patched_dir)
             patched_dir = self._extract_unpatched(patched_dir)
-            self._apply_patch(patch, patched_dir)
+            self._apply_patch(patch, patched_dir, io.subprocess)
 
             # Generate a new patch.
-            util.diff(orig_dir, patched_dir, patch)
+            util.diff(orig_dir, patched_dir, patch, io.subprocess)

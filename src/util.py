@@ -3,42 +3,70 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
+from itertools import filterfalse, tee
+from pathlib import PurePosixPath
+from shutil import copyfileobj
 import gzip
 import hashlib
-import os
-import shutil
-import subprocess
 import ssl
-import urllib.request
+
+
+def mix_shutil_path(concrete, shutil, os_link):
+    class PathWithShUtil(concrete):
+        def __add__(self, suffix):
+            return self.with_name(self.name + suffix)
+
+        def copy(self, target):
+            shutil.copy(str(self), str(target))
+
+        def copystat(self, target):
+            shutil.copystat(str(self), str(target))
+
+        def copymode(self, target):
+            shutil.copymode(str(self), str(target))
+
+        def rmtree(self):
+            shutil.rmtree(str(self))
+
+        def readlink(self):
+            # KLUDGE: peek into undocumented pathlib API
+            return self._accessor.readlink(str(self))
+
+        def link(self, dst):
+            os_link(str(self), str(dst))
+
+    return PathWithShUtil
 
 
 def copy_file(source, target, preserve_attributes):
-    if os.path.exists(target):
+    if target.exists():
         raise Exception('About to overwrite %s with %s' % (source, target))
-    if os.path.islink(source):
+    if source.is_symlink():
         # Preserve symbolic links.
-        destination = os.readlink(source)
-        if os.path.isabs(destination):
+        destination = source.readlink()
+        if PurePosixPath(destination).is_absolute():
             raise Exception(
                 '%s points to absolute location %s',
                 source, destination)
-        os.symlink(destination, target)
-    elif os.path.isfile(source):
+        target.symlink_to(destination)
+    elif source.is_file():
         # Copy regular files.
-        shutil.copy(source, target)
+        source.copy(target)
         if preserve_attributes:
-            shutil.copystat(source, target)
+            source.copystat(target)
     else:
         # Bail out on anything else.
         raise Exception(source + ' is of an unsupported type')
 
 
-def diff(orig_dir, patched_dir, patch):
-    proc = subprocess.Popen(['diff', '-urN', orig_dir, patched_dir],
+def diff(orig_dir, patched_dir, patch,
+         #@@grep
+         subprocess):
+    proc = subprocess.Popen(['diff', '-urN', str(orig_dir), str(patched_dir)],
                             stdout=subprocess.PIPE)
     minline = bytes('--- %s/' % orig_dir, encoding='ASCII')
     plusline = bytes('+++ %s/' % patched_dir, encoding='ASCII')
-    with open(patch, 'wb') as f:
+    with patch.open('wb') as f:
         for l in proc.stdout.readlines():
             if l.startswith(b'diff '):
                 # Omit lines that start with 'diff'. They serve
@@ -56,9 +84,10 @@ def diff(orig_dir, patched_dir, patch):
             else:
                 f.write(l)
 
+
 def file_contents_equal(path1, path2):
     # Compare file contents.
-    with open(path1, 'rb') as f1, open(path2, 'rb') as f2:
+    with path1.open('rb') as f1, path2.open('rb') as f2:
         while True:
             b1 = f1.read(16384)
             b2 = f2.read(16384)
@@ -69,11 +98,12 @@ def file_contents_equal(path1, path2):
 
 
 def gzip_file(source, target):
-    with open(source, 'rb') as f1, gzip.GzipFile(target, 'wb', mtime=0) as f2:
-        shutil.copyfileobj(f1, f2)
+    with source.open('rb') as f1, target.open('wb') as ft, gzip.GzipFile(
+            fileobj=ft, mode='wb', mtime=0) as f2:
+        copyfileobj(f1, f2)
 
 
-def unsafe_fetch(url):
+def unsafe_fetch(url, urlopen):
     # Fetch a file over HTTP, HTTPS or FTP. For HTTPS, we don't do any
     # certificate checking. The caller should validate the authenticity
     # of the result.
@@ -82,38 +112,34 @@ def unsafe_fetch(url):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return urllib.request.urlopen(url, context=ctx)
+        return urlopen(url, context=ctx)
     except TypeError:
         # Python < 3.4.3.
-        return urllib.request.urlopen(url)
+        return urlopen(url)
 
 
 def lchmod(path, mode):
-    try:
-        os.lchmod(path, mode)
-    except AttributeError:
-        if not os.path.islink(path):
-            os.chmod(path, mode)
+    path.lchmod(mode)
 
 
 def make_dir(path):
     try:
-        os.makedirs(path)
+        path.mkdir(parents=True)
     except FileExistsError:
         pass
 
 
 def make_parent_dir(path):
-    make_dir(os.path.dirname(path))
+    make_dir(path.parent)
 
 
 def _remove(path):
     try:
-        shutil.rmtree(path)
+        path.rmtree()
     except FileNotFoundError:
         pass
     except (NotADirectoryError, OSError):
-        os.unlink(path)
+        path.unlink()
 
 
 def remove(path):
@@ -123,8 +149,8 @@ def remove(path):
     except PermissionError:
         # If that fails, add write permissions to the directories stored
         # inside and retry.
-        for root, dirs, files in os.walk(path):
-            os.chmod(root, 0o755)
+        for root, dirs, files in walk(path):
+            root.chmod(0o755)
         _remove(path)
 
 
@@ -137,10 +163,10 @@ def remove_and_make_dir(path):
 
 
 def hash_file(path, checksum):
-    if os.path.islink(path):
-        checksum.update(bytes(os.readlink(path), encoding='ASCII'))
+    if path.is_symlink():
+        checksum.update(bytes(path.readlink(), encoding='ASCII'))
     else:
-        with open(path, 'rb') as f:
+        with path.open('rb') as f:
             while True:
                 data = f.read(16384)
                 if not data:
@@ -167,22 +193,30 @@ def md5(path):
 
 
 def walk_files(path):
-    if os.path.isdir(path):
-        for root, dirs, files in os.walk(path):
-            # Return all files.
-            for f in files:
-                yield os.path.join(root, f)
-            # Return all symbolic links to directories as well.
-            for f in dirs:
-                fullpath = os.path.join(root, f)
-                if os.path.islink(fullpath):
-                    yield fullpath
-    elif os.path.exists(path):
+    if path.is_dir():
+        for sub in path.iterdir():
+            yield from walk_files(sub)
+        # Return all symbolic links to directories as well.
+        if path.is_symlink():
+            yield path.resolve()
+    elif path.exists():
         yield path
 
 
+def walk(path):
+    def is_dir(p):
+        return p.is_dir()
+    if path.is_dir():
+        root = path
+        dirs, files = tee(root.iterdir())
+        dirs = list(filter(is_dir, dirs))
+        files = list(filterfalse(is_dir, files))
+        yield root, dirs, files
+        for subdir in dirs:
+            yield from walk(subdir)
+
+
 def walk_files_concurrently(source, target):
-    for source_filename in walk_files(source):
-        target_filename = os.path.normpath(
-            os.path.join(target, os.path.relpath(source_filename, source)))
-        yield source_filename, target_filename
+    for source_file in walk_files(source):
+        target_file = (target / source_file.relative_to(source)).resolve()
+        yield source_file, target_file

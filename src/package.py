@@ -4,16 +4,13 @@
 # See the LICENSE file for details.
 
 import logging
-import os
-import shutil
-import stat
-import subprocess
 
 from . import config
 from . import util
 from .builder import BuildDirectory, BuildHandle, HostBuilder, TargetBuilder
 
 log = logging.getLogger(__name__)
+
 
 class HostPackage:
 
@@ -46,21 +43,24 @@ class HostPackage:
             dep.build()
 
         # Install dependencies into an empty buildroot.
-        util.remove_and_make_dir(config.DIR_BUILDROOT)
+        util.remove_and_make_dir(self._install_directory /
+                                 config.DIR_BUILDROOT)
         for dep in deps:
             dep.extract()
 
     def build(self):
         # Skip this package if it has been built already.
-        if os.path.isdir(self._install_directory):
+        if self._install_directory.is_dir():
             return
 
         # Perform the build inside an empty buildroot.
         self._initialize_buildroot()
         log.info('BUILD %s', self._name)
+        fs = self._install_directory  # absolute navigation KLUDGE
+        io = (subprocess, chdir, getenv)
         self._build_cmd(
             BuildHandle(
-                HostBuilder(BuildDirectory(), self._install_directory),
+                HostBuilder(BuildDirectory(fs), self._install_directory, io),
                 self._name, self._version, self._distfiles,
                 self._resource_directory))
 
@@ -100,7 +100,7 @@ class TargetPackage:
 
     def build(self):
         # Skip this package if it has been built already.
-        if not self._build_cmd or os.path.isdir(self._install_directory):
+        if not self._build_cmd or self._install_directory.is_dir():
             return
 
         # Perform the build inside a buildroot with its dependencies
@@ -134,7 +134,7 @@ class TargetPackage:
                 contents = contents.replace('%%PREFIX%%', expandpath)
                 with open(target_file, 'w') as f:
                     f.write(contents)
-                shutil.copymode(source_file, target_file)
+                source_file.copymode(target_file)
             else:
                 # Regular file. Copy it over literally.
                 util.copy_file(source_file, target_file, False)
@@ -198,6 +198,7 @@ class TargetPackage:
         util.remove_and_make_dir(config.DIR_BUILDROOT)
         for dep in host_deps:
             dep.extract()
-        prefix = os.path.join(config.DIR_BUILDROOT, self._arch)
+        # KLUDGE: absolute path navigation
+        prefix = self._install_directory / config.DIR_BUILDROOT / self._arch
         for dep in lib_depends:
             dep.extract(prefix, prefix)
