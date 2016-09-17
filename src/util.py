@@ -7,12 +7,13 @@ from itertools import filterfalse, tee
 # Use the Path type only; the constructor is ambient authority
 from pathlib import Path as PathT, PurePath, PurePosixPath
 from shutil import copyfileobj
-from typing import AnyStr, Generic, Iterator, Tuple, Type, TypeVar, Union
+from typing import (AnyStr, Callable, Generic, Iterator,
+                    Tuple, Type, TypeVar, Union)
+from urllib.request import HTTPResponse, addinfourl
 import gzip
 import hashlib
 import subprocess
 import ssl
-import urllib.request
 
 Self = TypeVar('Self')
 
@@ -151,9 +152,11 @@ def gzip_file(source: PathT, target: PathT):
 
 
 # So says the standard python 3.4 stubs
-_UrlopenRet = Union[urllib.request.HTTPResponse, urllib.request.addinfourl]
+_UrlopenRet = Union[HTTPResponse, addinfourl]
+_UrlopenFn = Callable[..., _UrlopenRet]
 
-def unsafe_fetch(url: str) -> _UrlopenRet:
+
+def unsafe_fetch(url: str, urlopen: _UrlopenFn) -> _UrlopenRet:
     # Fetch a file over HTTP, HTTPS or FTP. For HTTPS, we don't do any
     # certificate checking. The caller should validate the authenticity
     # of the result.
@@ -162,10 +165,10 @@ def unsafe_fetch(url: str) -> _UrlopenRet:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        return urllib.request.urlopen(url, context=ctx)
+        return urlopen(url, context=ctx)
     except TypeError:
         # Python < 3.4.3.
-        return urllib.request.urlopen(url)
+        return urlopen(url)
 
 
 def lchmod(path: PathT, mode: int):
