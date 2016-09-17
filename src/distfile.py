@@ -15,6 +15,7 @@ from . import util
 
 log = logging.getLogger(__name__)
 
+
 class Distfile:
 
     def __init__(self, distdir, name, checksum, master_sites, patches,
@@ -46,7 +47,8 @@ class Distfile:
         with patch.open('rb') as f:
             for l in f.readlines():
                 if l.startswith(b'--- '):
-                    filename = str(l[4:-1].split(b'\t', 1)[0], encoding='ASCII')
+                    filename = str(l[4:-1].split(b'\t', 1)[0],
+                                   encoding='ASCII')
                     while True:
                         if (target / filename).exists():
                             # Correct patchlevel determined.
@@ -105,7 +107,8 @@ class Distfile:
             log.info('FETCH %s', url)
             try:
                 util.make_parent_dir(self._pathname)
-                with util.unsafe_fetch(url) as fin, self._pathname.open('wb') as fout:
+                with util.unsafe_fetch(url) as fin, \
+                     self._pathname.open('wb') as fout:
                     shutil.copyfileobj(fin, fout)
             except ConnectionResetError as e:
                 log.warning(e)
@@ -120,12 +123,12 @@ class Distfile:
             self._apply_patch(patch, target)
         # Add markers to sources that depend on unsafe string sources.
         for filename in self._unsafe_string_sources:
-          path = target / filename
-          with path.open('rb') as fin, (path + '.new').open('wb') as fout:
-            fout.write(bytes('#define _CLOUDLIBC_UNSAFE_STRING_FUNCTIONS\n',
-                             encoding='ASCII'))
-            fout.write(fin.read())
-            (path + '.new').rename(path)
+            path = target / filename
+            with path.open('rb') as fin, (path + '.new').open('wb') as fout:
+                fout.write(bytes('#define _CLOUDLIBC_UNSAFE_STRING_FUNCTIONS\n',
+                                 encoding='ASCII'))
+                fout.write(fin.read())
+                (path + '.new').rename(path)
         return target
 
     def fixup_patches(self, tmpdir):
