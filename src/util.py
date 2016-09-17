@@ -3,13 +3,13 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
+from itertools import filterfalse, tee
 # Use the Path type only; the constructor is ambient authority
 from pathlib import Path as PathT, PurePath, PurePosixPath
+from shutil import copyfileobj
 from typing import AnyStr, Generic, Iterator, Tuple, Type, TypeVar, Union
 import gzip
 import hashlib
-import os
-import shutil
 import subprocess
 import ssl
 import urllib.request
@@ -17,11 +17,25 @@ import urllib.request
 Self = TypeVar('Self')
 
 
-class PathExt(Generic[Self], PathT):
+class PathTFix(Generic[Self], PathT):
     # fix lack of parameter in PurePath type decl
     # ref https://github.com/python/typeshed/issues/553
+    def iterdir(self) -> Iterator[Self]:   # type: ignore
+        raise NotImplementedError
+
+    def relative_to(self, *other: str) -> Self:   # type: ignore
+        raise NotImplementedError
+
+    def resolve(self) -> Self:   # type: ignore
+        raise NotImplementedError
+
     def with_name(self, name: str) -> Self:   # type: ignore
         raise NotImplementedError
+
+    parent = None  # type: Self
+
+
+class PathExt(PathTFix):
 
     def __add__(self, suffix: str) -> Self:
         raise NotImplementedError
@@ -73,22 +87,22 @@ def mix_shutil_path(concrete: Type[PurePosixPath],
     return PathWithShUtil
 
 
-def copy_file(source: str, target: str, preserve_attributes: bool):
-    if os.path.exists(target):
+def copy_file(source: PathExt, target: PathExt, preserve_attributes: bool):
+    if target.exists():
         raise Exception('About to overwrite %s with %s' % (source, target))
-    if os.path.islink(source):
+    if source.is_symlink():
         # Preserve symbolic links.
-        destination = os.readlink(source)
-        if os.path.isabs(destination):
+        destination = source.readlink()
+        if PurePosixPath(destination).is_absolute():
             raise Exception(
                 '%s points to absolute location %s',
                 source, destination)
-        os.symlink(destination, target)
-    elif os.path.isfile(source):
+        target.symlink_to(destination)
+    elif source.is_file():
         # Copy regular files.
-        shutil.copy(source, target)
+        source.copy(target)
         if preserve_attributes:
-            shutil.copystat(source, target)
+            source.copystat(target)
     else:
         # Bail out on anything else.
         raise Exception(source + ' is of an unsupported type')
@@ -118,9 +132,9 @@ def diff(orig_dir: str, patched_dir: str, patch: str):
                 f.write(l)
 
 
-def file_contents_equal(path1: str, path2: str) -> bool:
+def file_contents_equal(path1: PathT, path2: PathT) -> bool:
     # Compare file contents.
-    with open(path1, 'rb') as f1, open(path2, 'rb') as f2:
+    with path1.open('rb') as f1, path2.open('rb') as f2:
         while True:
             b1 = f1.read(16384)
             b2 = f2.read(16384)
@@ -130,10 +144,10 @@ def file_contents_equal(path1: str, path2: str) -> bool:
                 return True
 
 
-def gzip_file(source: str, target: str):
-    with open(source, 'rb') as f1, gzip.GzipFile(target, 'wb', mtime=0) as f2:
-        shutil.copyfileobj(f1, f2)  # type: ignore
-
+def gzip_file(source: PathT, target: PathT):
+    with source.open('rb') as f1, target.open('wb') as ft, gzip.GzipFile(
+            fileobj=ft, mode='wb', mtime=0) as f2:
+        copyfileobj(f1, f2)  # type: ignore slight mismatch with GzipFile
 
 
 # So says the standard python 3.4 stubs
@@ -154,47 +168,43 @@ def unsafe_fetch(url: str) -> _UrlopenRet:
         return urllib.request.urlopen(url)
 
 
-def lchmod(path: str, mode: int):
-    try:
-        os.lchmod(path, mode)
-    except AttributeError:
-        if not os.path.islink(path):
-            os.chmod(path, mode)
+def lchmod(path: PathT, mode: int):
+    path.lchmod(mode)
 
 
-def make_dir(path: str):
+def make_dir(path: PathT):
     try:
-        os.makedirs(path)
+        path.mkdir(parents=True)
     except FileExistsError:
         pass
 
 
-def make_parent_dir(path: str):
-    make_dir(os.path.dirname(path))
+def make_parent_dir(path: PathExt):
+    make_dir(path.parent)
 
 
-def _remove(path: str):
+def _remove(path: PathExt):
     try:
-        shutil.rmtree(path)
+        path.rmtree()
     except FileNotFoundError:
         pass
     except (NotADirectoryError, OSError):
-        os.unlink(path)
+        path.unlink()
 
 
-def remove(path: str):
+def remove(path: PathExt):
     try:
         # First try to remove the file or directory directly.
         _remove(path)
     except PermissionError:
         # If that fails, add write permissions to the directories stored
         # inside and retry.
-        for root, dirs, files in os.walk(path):
-            os.chmod(root, 0o755)
+        for root, dirs, files in walk(path):
+            root.chmod(0o755)
         _remove(path)
 
 
-def remove_and_make_dir(path: str):
+def remove_and_make_dir(path: PathExt):
     try:
         remove(path)
     except FileNotFoundError:
@@ -202,11 +212,11 @@ def remove_and_make_dir(path: str):
     make_dir(path)
 
 
-def hash_file(path: str, checksum: hashlib.Hash):
-    if os.path.islink(path):
-        checksum.update(bytes(os.readlink(path), encoding='ASCII'))
+def hash_file(path: PathExt, checksum: hashlib.Hash):
+    if path.is_symlink():
+        checksum.update(bytes(path.readlink(), encoding='ASCII'))
     else:
-        with open(path, 'rb') as f:
+        with path.open('rb') as f:
             while True:
                 data = f.read(16384)
                 if not data:
@@ -214,42 +224,49 @@ def hash_file(path: str, checksum: hashlib.Hash):
                 checksum.update(data)
 
 
-def sha256(path: str) -> hashlib.Hash:
+def sha256(path: PathExt) -> hashlib.Hash:
     checksum = hashlib.sha256()
     hash_file(path, checksum)
     return checksum
 
 
-def sha512(path) -> hashlib.Hash:
+def sha512(path: PathExt) -> hashlib.Hash:
     checksum = hashlib.sha512()
     hash_file(path, checksum)
     return checksum
 
 
-def md5(path) -> hashlib.Hash:
+def md5(path: PathExt) -> hashlib.Hash:
     checksum = hashlib.md5()
     hash_file(path, checksum)
     return checksum
 
 
-def walk_files(path: str) -> Iterator[str]:
-    if os.path.isdir(path):
-        for root, dirs, files in os.walk(path):
-            # Return all files.
-            for f in files:
-                yield os.path.join(root, f)
-            # Return all symbolic links to directories as well.
-            for f in dirs:
-                fullpath = os.path.join(root, f)
-                if os.path.islink(fullpath):
-                    yield fullpath
-    elif os.path.exists(path):
+def walk_files(path: PathExt) -> Iterator[PathExt]:
+    if path.is_dir():
+        for sub in path.iterdir():
+            yield from walk_files(sub)
+        # Return all symbolic links to directories as well.
+        if path.is_symlink():
+            yield path.resolve()
+    elif path.exists():
         yield path
 
 
-def walk_files_concurrently(source: str,
-                            target: str) -> Iterator[Tuple[str, str]]:
-    for source_filename in walk_files(source):
-        target_filename = os.path.normpath(
-            os.path.join(target, os.path.relpath(source_filename, source)))
-        yield source_filename, target_filename
+def walk(path: PathExt):
+    def is_dir(p):
+        return p.is_dir()
+    if path.is_dir():
+        root = path
+        dirs, files = tee(root.iterdir())
+        dirs = list(filter(is_dir, dirs))
+        files = list(filterfalse(is_dir, files))
+        yield root, dirs, files
+        for subdir in dirs:
+            yield from walk(subdir)
+
+
+def walk_files_concurrently(source: PathExt, target: PathExt) -> Iterator[Tuple[PathExt, PathExt]]:
+    for source_file in walk_files(source):
+        target_file = (target / source_file.relative_to(str(source))).resolve()
+        yield source_file, target_file
