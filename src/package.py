@@ -6,8 +6,6 @@
 import logging
 import os
 import shutil
-import stat
-import subprocess
 
 from . import config
 from . import util
