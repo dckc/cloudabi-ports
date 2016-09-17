@@ -3,7 +3,9 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
-from typing import Union, Iterator, Tuple
+# Use the Path type only; the constructor is ambient authority
+from pathlib import Path as PathT, PurePath, PurePosixPath
+from typing import AnyStr, Generic, Iterator, Tuple, Type, TypeVar, Union
 import gzip
 import hashlib
 import os
@@ -11,6 +13,64 @@ import shutil
 import subprocess
 import ssl
 import urllib.request
+
+Self = TypeVar('Self')
+
+
+class PathExt(Generic[Self], PathT):
+    # fix lack of parameter in PurePath type decl
+    # ref https://github.com/python/typeshed/issues/553
+    def with_name(self, name: str) -> Self:   # type: ignore
+        raise NotImplementedError
+
+    def __add__(self, suffix: str) -> Self:
+        raise NotImplementedError
+
+    def copy(self, target: PathExt):
+        raise NotImplementedError
+
+    def copystat(self, target: PathExt):
+        raise NotImplementedError
+
+    def copymode(self, target: PathExt):
+        raise NotImplementedError
+
+    def rmtree(self):
+        raise NotImplementedError
+
+    def readlink(self) -> AnyStr:
+        raise NotImplementedError
+
+    def link(self, dst: PathExt):
+        raise NotImplementedError
+
+
+def mix_shutil_path(concrete: Type[PurePosixPath],
+                    shutil, os_link) -> Type[PathExt]:
+    class PathWithShUtil(concrete, PathExt):   # type: ignore
+        def __add__(self, suffix: str) -> PathWithShUtil:
+            return self.with_name(self.name + suffix)
+
+        def copy(self, target: PathExt):
+            shutil.copy(str(self), str(target))
+
+        def copystat(self, target: PathExt):
+            shutil.copystat(str(self), str(target))
+
+        def copymode(self, target: PathExt):
+            shutil.copymode(str(self), str(target))
+
+        def rmtree(self):
+            shutil.rmtree(str(self))
+
+        def readlink(self):
+            # KLUDGE: peek into undocumented pathlib API
+            return self._accessor.readlink(str(self))
+
+        def link(self, dst: PathExt):
+            os_link(str(self), str(dst))
+
+    return PathWithShUtil
 
 
 def copy_file(source: str, target: str, preserve_attributes: bool):
