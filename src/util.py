@@ -8,15 +8,14 @@ from itertools import filterfalse, tee
 from pathlib import Path as PathT, PurePath, PurePosixPath
 from shutil import copyfileobj
 from subprocess import PIPE, Popen as PopenT
-from typing import (AnyStr, BinaryIO, Callable, Generic, Iterator,
-                    List, Tuple, Type, TypeVar, Union, cast)
+from typing import (Any, AnyStr, BinaryIO, Callable, Dict, Generic, Iterator,
+                    List, Tuple, Type, Union, cast)
 import gzip
 import hashlib
 import ssl
 
 UrlopenFn = Callable[..., BinaryIO]
 
-Self = TypeVar('Self')
 _SubPath = Union [str, PurePath]
 
 
@@ -27,31 +26,34 @@ class RunCommand(object):
     def check_call(self, args: List[str], **kwargs) -> int:
         raise NotImplementedError
 
+    def check_output(self, args: str, **kwargs) -> Any:
+        raise NotImplementedError
 
-class PathTFix(Generic[Self], PathT):
+
+class PathExt(PathT):
     # fix lack of parameter in PurePath type decl
     # ref https://github.com/python/typeshed/issues/553
-    def __truediv__(self, key: _SubPath) -> Self:   # type: ignore
+    def pathjoin(self, *key: _SubPath) -> PathExt:   # type: ignore
         raise NotImplementedError
 
-    def iterdir(self) -> Iterator[Self]:   # type: ignore
+    def __truediv__(self, key: _SubPath) -> PathExt:   # type: ignore
         raise NotImplementedError
 
-    def relative_to(self, *other: str) -> Self:   # type: ignore
+    def iterdir(self) -> Iterator[PathExt]:   # type: ignore
         raise NotImplementedError
 
-    def resolve(self) -> Self:   # type: ignore
+    def relative_to(self, *other: _SubPath) -> PathExt:   # type: ignore
         raise NotImplementedError
 
-    def with_name(self, name: str) -> Self:   # type: ignore
+    def resolve(self) -> PathExt:   # type: ignore
         raise NotImplementedError
 
-    parent = None  # type: Self
+    def with_name(self, name: str) -> PathExt:   # type: ignore
+        raise NotImplementedError
 
+    parent = None  # type: PathExt
 
-class PathExt(PathTFix):
-
-    def __add__(self, suffix: str) -> Self:
+    def __add__(self, suffix: str) -> PathExt:
         raise NotImplementedError
 
     def copy(self, target: PathExt):
@@ -72,11 +74,15 @@ class PathExt(PathTFix):
     def link(self, dst: PathExt):
         raise NotImplementedError
 
+    def platform(self) -> Callable[[object], PathExt]:
+        raise NotImplementedError
+
 
 def mix_shutil_path(concrete: Type[PurePosixPath],
+                    config_path: Callable[[str], str],
                     shutil, os_link) -> Type[PathExt]:
     class PathWithShUtil(concrete, PathExt):   # type: ignore
-        def __add__(self, suffix: str) -> PathWithShUtil:
+        def __add__(self, suffix: str) -> PathExt:
             return self.with_name(self.name + suffix)
 
         def copy(self, target: PathExt):
@@ -97,6 +103,11 @@ def mix_shutil_path(concrete: Type[PurePosixPath],
 
         def link(self, dst: PathExt):
             os_link(str(self), str(dst))
+
+        def platform(self) -> Callable[[object], PathExt]:
+            allfiles = self / '/'  # KLUDGE
+            def get(key):
+                return allfiles / config_path(key)
 
     return PathWithShUtil
 
@@ -265,7 +276,8 @@ def walk_files(path: PathExt) -> Iterator[PathExt]:
         yield path
 
 
-def walk(path: PathExt):
+def walk(path: PathExt) -> Iterator[Tuple[PathExt, List[PathExt],
+                                          List[PathExt]]]:
     def is_dir(p):
         return p.is_dir()
     if path.is_dir():

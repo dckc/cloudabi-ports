@@ -5,7 +5,7 @@
 
 from hashlib import Hash
 from pathlib import PurePosixPath
-from random import Random
+from random import Random as RandomT
 from shutil import copyfileobj
 from typing import Any, NamedTuple, cast
 from urllib.error import URLError
@@ -18,14 +18,11 @@ from .util import PathExt
 log = logging.getLogger(__name__)
 
 
-class Access(NamedTuple('Access', [
+class Distfile:
+    Access = NamedTuple('D_Access', [
         ('urlopen', util.UrlopenFn),
         ('subprocess', util.RunCommand),
-        ('random', Random)])):
-    pass
-
-
-class Distfile:
+        ('random', RandomT)])
 
     def __init__(self, distdir: PathExt, io: Access, name: str, checksum: Hash,
                  master_sites: List[str],
@@ -86,17 +83,15 @@ class Distfile:
             if path.suffix == '.orig':
                 path.unlink()
 
-    def _extract_unpatched(self, target: PathExt):
+    def _extract_unpatched(self, target: PathExt) -> PathExt:
         io = self._io
 
         # Fetch and extract tarball.
         self._fetch()
-        allfiles = target  # KLUDGE
-        tar = allfiles / config.DIR_BUILDROOT / 'bin/bsdtar'
-        if not tar.exists():
-            tar = 'tar'
+        platform = target.platform()
+        tar = platform(config.DIR_BUILDROOT) / 'bin/bsdtar'
         util.make_dir(target)
-        io.subprocess.check_call([tar,
+        io.subprocess.check_call([str(tar) if tar.exists() else 'tar',
                                   '-xC', str(target),
                                   '-f', str(self._pathname)])
 

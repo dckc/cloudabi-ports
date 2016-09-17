@@ -3,34 +3,35 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
-from typing import Callable, Optional, Set, cast
+from typing import Callable, Dict, Optional, Set, cast
 import logging
 
 from . import config
 from . import util
 from .builder import BuildDirectory, BuildHandle, HostBuilder, TargetBuilder
+from .builder import Access
+from .distfile import Distfile
 from .util import PathExt
 
 log = logging.getLogger(__name__)
 
-WHAT = int
 
 
 class HostPackage:
 
     def __init__(self, install_directory: PathExt,
+                 io: Access,
                  name: str, version: str, homepage :str, maintainer: str,
                  build_depends: Set[HostPackage],
                  lib_depends: Set[HostPackage],
-                 distfiles: WHAT,
-                 build_cmd: Callable[[BuildHandle], None],
-                 resource_directory: PathExt) -> None:
+                 distfiles: Dict[str, Distfile],
+                 build_cmd: Callable[[BuildHandle], None]) -> None:
         self._install_directory = install_directory
+        self._io = io
         self._name = name
         self._version = version
         self._distfiles = distfiles
         self._build_cmd = build_cmd
-        self._resource_directory = resource_directory
 
         self._build_depends = set()  # type: Set[HostPackage]
         self._lib_depends = set()    # type: Set[HostPackage]
@@ -52,8 +53,8 @@ class HostPackage:
             dep.build()
 
         # Install dependencies into an empty buildroot.
-        allfiles = self._install_directory  # KLUDGE
-        util.remove_and_make_dir(allfiles / config.DIR_BUILDROOT)
+        platform = self._install_directory.platform()
+        util.remove_and_make_dir(platform(config.DIR_BUILDROOT))
         for dep in deps:
             dep.extract()
 
@@ -65,17 +66,18 @@ class HostPackage:
         # Perform the build inside an empty buildroot.
         self._initialize_buildroot()
         log.info('BUILD %s', self._name)
+        platform = self._install_directory.platform()
         self._build_cmd(
             BuildHandle(
-                HostBuilder(BuildDirectory(), self._install_directory),
-                self._name, self._version, self._distfiles,
-                self._resource_directory))
+                HostBuilder(BuildDirectory(platform), self._install_directory,
+                            self._io),
+                self._name, self._version, self._distfiles, self._io))
 
     def extract(self):
         # Copy files literally.
-        allfiles = self._install_directory  # KLUDGE
+        platform = self._install_directory.platform()
         for source_file, target_file in util.walk_files_concurrently(
-                self._install_directory, allfiles / config.DIR_BUILDROOT):
+                self._install_directory, platform(config.DIR_BUILDROOT)):
             util.make_parent_dir(target_file)
             util.copy_file(source_file, target_file, False)
 
@@ -83,13 +85,15 @@ class HostPackage:
 class TargetPackage:
 
     def __init__(self, install_directory: PathExt,
+                 io: Access,
                  arch: str, name: str, version: str, homepage: str,
                  maintainer: str,
                  host_packages: Dict[str, HostPackage],
                  lib_depends: Set[TargetPackage],
                  build_cmd: Optional[Callable[[BuildHandle], None]],
-                 distfiles: WHAT, resource_directory: PathExt) -> None:
+                 distfiles: Dict[str, Distfile]) -> None:
         self._install_directory = install_directory
+        self._io = io
         self._arch = arch
         self._name = name
         self._version = version
@@ -98,7 +102,6 @@ class TargetPackage:
         self._host_packages = host_packages
         self._build_cmd = build_cmd
         self._distfiles = distfiles
-        self._resource_directory = resource_directory
 
         # Compute the set of transitive library dependencies.
         self._lib_depends = set()  # type: Set[TargetPackage]
@@ -110,7 +113,7 @@ class TargetPackage:
     def __str__(self):
         return '%s %s' % (self.get_freebsd_name(), self._version)
 
-    def build(self):
+    def build(self) -> None:
         # Skip this package if it has been built already.
         if not self._build_cmd or self._install_directory.is_dir():
             return
@@ -124,17 +127,17 @@ class TargetPackage:
             'llvm', 'm4', 'make', 'ninja', 'pkgconf', 'sed', 'texinfo',
         }, self._lib_depends)
         log.info('BUILD %s %s', self._name, self._arch)
+        platform = self._install_directory.platform()
         self._build_cmd(
             BuildHandle(
-                TargetBuilder(BuildDirectory(),
-                              self._install_directory, self._arch),
-                self._name, self._version, self._distfiles,
-                self._resource_directory))
+                TargetBuilder(BuildDirectory(platform),
+                              self._install_directory, self._arch, self._io),
+                self._name, self._version, self._distfiles, self._io))
 
-    def clean(self):
+    def clean(self) -> None:
         util.remove(self._install_directory)
 
-    def extract(self, path, expandpath):
+    def extract(self, path: PathExt, expandpath: str) -> None:
         for source_file, target_file in util.walk_files_concurrently(
                 self._install_directory, path):
             util.make_parent_dir(target_file)
@@ -193,7 +196,7 @@ class TargetPackage:
     def get_version(self):
         return self._version
 
-    def initialize_buildroot(self, host_depends: List[str],
+    def initialize_buildroot(self, host_depends: Set[str],
                              lib_depends: Set[TargetPackage]=set()) -> None:
         # Ensure that all dependencies have been built.
         host_deps = set()
@@ -208,10 +211,10 @@ class TargetPackage:
             ldep.build()
 
         # Install dependencies into an empty buildroot.
-        allfiles = self._install_directory  # KLUDGE
-        util.remove_and_make_dir(allfiles / config.DIR_BUILDROOT)
+        platform = self._install_directory.platform()
+        util.remove_and_make_dir(platform(config.DIR_BUILDROOT))
         for dep in host_deps:
             dep.extract()
-        prefix = allfiles / config.DIR_BUILDROOT, self._arch
+        prefix = platform(config.DIR_BUILDROOT) / self._arch
         for ldep in lib_depends:
-            ldep.extract(prefix, prefix)
+            ldep.extract(prefix, str(prefix))
