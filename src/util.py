@@ -7,20 +7,33 @@ from itertools import filterfalse, tee
 # Use the Path type only; the constructor is ambient authority
 from pathlib import Path as PathT, PurePath, PurePosixPath
 from shutil import copyfileobj
-from subprocess import PIPE
-from typing import (AnyStr, Callable, Generic, Iterator,
-                    Tuple, Type, TypeVar, Union)
-from urllib.request import HTTPResponse, addinfourl
+from subprocess import PIPE, Popen as PopenT
+from typing import (AnyStr, BinaryIO, Callable, Generic, Iterator,
+                    List, Tuple, Type, TypeVar, Union, cast)
 import gzip
 import hashlib
 import ssl
 
+UrlopenFn = Callable[..., BinaryIO]
+
 Self = TypeVar('Self')
+_SubPath = Union [str, PurePath]
+
+
+class RunCommand(object):
+    def Popen(self, args: List[str], **kwargs) -> PopenT:
+        raise NotImplementedError
+
+    def check_call(self, args: List[str], **kwargs) -> int:
+        raise NotImplementedError
 
 
 class PathTFix(Generic[Self], PathT):
     # fix lack of parameter in PurePath type decl
     # ref https://github.com/python/typeshed/issues/553
+    def __truediv__(self, key: _SubPath) -> Self:   # type: ignore
+        raise NotImplementedError
+
     def iterdir(self) -> Iterator[Self]:   # type: ignore
         raise NotImplementedError
 
@@ -110,9 +123,9 @@ def copy_file(source: PathExt, target: PathExt, preserve_attributes: bool):
 
 
 def diff(orig_dir: PathExt, patched_dir: PathExt, patch: PathExt,
-         Popen):
-    proc = Popen(['diff', '-urN', str(orig_dir), str(patched_dir)],
-                 stdout=PIPE)
+         subprocess: RunCommand):
+    proc = subprocess.Popen(['diff', '-urN', str(orig_dir), str(patched_dir)],
+                            stdout=PIPE)
     minline = bytes('--- %s/' % orig_dir, encoding='ASCII')
     plusline = bytes('+++ %s/' % patched_dir, encoding='ASCII')
     with patch.open('wb') as f:
@@ -149,15 +162,10 @@ def file_contents_equal(path1: PathT, path2: PathT) -> bool:
 def gzip_file(source: PathT, target: PathT):
     with source.open('rb') as f1, target.open('wb') as ft, gzip.GzipFile(
             fileobj=ft, mode='wb', mtime=0) as f2:
-        copyfileobj(f1, f2)  # type: ignore slight mismatch with GzipFile
+        copyfileobj(f1, cast(BinaryIO, f2))
 
 
-# So says the standard python 3.4 stubs
-_UrlopenRet = Union[HTTPResponse, addinfourl]
-_UrlopenFn = Callable[..., _UrlopenRet]
-
-
-def unsafe_fetch(url: str, urlopen: _UrlopenFn) -> _UrlopenRet:
+def unsafe_fetch(url: str, urlopen: UrlopenFn) -> BinaryIO:
     # Fetch a file over HTTP, HTTPS or FTP. For HTTPS, we don't do any
     # certificate checking. The caller should validate the authenticity
     # of the result.
