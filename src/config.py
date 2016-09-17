@@ -3,8 +3,8 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
+from pkgutil import get_data
 import platform
-import os
 
 # Architectures for which we can build packages.
 ARCHITECTURES = {
@@ -19,8 +19,9 @@ ARCHITECTURES = {
 # build directory. Debug symbols and __FILE__ use absolute paths.
 DIR_BUILDROOT = '/usr/obj/cloudabi-ports'
 
-# Location where resource files are stored.
-DIR_RESOURCES = os.path.join(os.getcwd(), 'misc')
+# Resource files.
+RESOURCES = dict((name, get_data('misc', name))
+                 for name in ['config.guess', 'config.sub'])
 
 # Location at which distfiles can be fetched in case the master sites
 # are down.
