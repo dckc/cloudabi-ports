@@ -13,6 +13,7 @@ from .builder import BuildDirectory, BuildHandle, HostBuilder, TargetBuilder
 
 log = logging.getLogger(__name__)
 
+
 class HostPackage:
 
     def __init__(self, install_directory, name, version, homepage,
