@@ -3,6 +3,7 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
+from typing import Union, Iterator, Tuple
 import gzip
 import hashlib
 import os
@@ -12,7 +13,7 @@ import ssl
 import urllib.request
 
 
-def copy_file(source, target, preserve_attributes):
+def copy_file(source: str, target: str, preserve_attributes: bool):
     if os.path.exists(target):
         raise Exception('About to overwrite %s with %s' % (source, target))
     if os.path.islink(source):
@@ -33,7 +34,7 @@ def copy_file(source, target, preserve_attributes):
         raise Exception(source + ' is of an unsupported type')
 
 
-def diff(orig_dir, patched_dir, patch):
+def diff(orig_dir: str, patched_dir: str, patch: str):
     proc = subprocess.Popen(['diff', '-urN', orig_dir, patched_dir],
                             stdout=subprocess.PIPE)
     minline = bytes('--- %s/' % orig_dir, encoding='ASCII')
@@ -56,7 +57,8 @@ def diff(orig_dir, patched_dir, patch):
             else:
                 f.write(l)
 
-def file_contents_equal(path1, path2):
+
+def file_contents_equal(path1: str, path2: str) -> bool:
     # Compare file contents.
     with open(path1, 'rb') as f1, open(path2, 'rb') as f2:
         while True:
@@ -68,12 +70,16 @@ def file_contents_equal(path1, path2):
                 return True
 
 
-def gzip_file(source, target):
+def gzip_file(source: str, target: str):
     with open(source, 'rb') as f1, gzip.GzipFile(target, 'wb', mtime=0) as f2:
-        shutil.copyfileobj(f1, f2)
+        shutil.copyfileobj(f1, f2)  # type: ignore
 
 
-def unsafe_fetch(url):
+
+# So says the standard python 3.4 stubs
+_UrlopenRet = Union[urllib.request.HTTPResponse, urllib.request.addinfourl]
+
+def unsafe_fetch(url: str) -> _UrlopenRet:
     # Fetch a file over HTTP, HTTPS or FTP. For HTTPS, we don't do any
     # certificate checking. The caller should validate the authenticity
     # of the result.
@@ -88,7 +94,7 @@ def unsafe_fetch(url):
         return urllib.request.urlopen(url)
 
 
-def lchmod(path, mode):
+def lchmod(path: str, mode: int):
     try:
         os.lchmod(path, mode)
     except AttributeError:
@@ -96,18 +102,18 @@ def lchmod(path, mode):
             os.chmod(path, mode)
 
 
-def make_dir(path):
+def make_dir(path: str):
     try:
         os.makedirs(path)
     except FileExistsError:
         pass
 
 
-def make_parent_dir(path):
+def make_parent_dir(path: str):
     make_dir(os.path.dirname(path))
 
 
-def _remove(path):
+def _remove(path: str):
     try:
         shutil.rmtree(path)
     except FileNotFoundError:
@@ -116,7 +122,7 @@ def _remove(path):
         os.unlink(path)
 
 
-def remove(path):
+def remove(path: str):
     try:
         # First try to remove the file or directory directly.
         _remove(path)
@@ -128,7 +134,7 @@ def remove(path):
         _remove(path)
 
 
-def remove_and_make_dir(path):
+def remove_and_make_dir(path: str):
     try:
         remove(path)
     except FileNotFoundError:
@@ -136,7 +142,7 @@ def remove_and_make_dir(path):
     make_dir(path)
 
 
-def hash_file(path, checksum):
+def hash_file(path: str, checksum: hashlib.Hash):
     if os.path.islink(path):
         checksum.update(bytes(os.readlink(path), encoding='ASCII'))
     else:
@@ -148,25 +154,25 @@ def hash_file(path, checksum):
                 checksum.update(data)
 
 
-def sha256(path):
+def sha256(path: str) -> hashlib.Hash:
     checksum = hashlib.sha256()
     hash_file(path, checksum)
     return checksum
 
 
-def sha512(path):
+def sha512(path) -> hashlib.Hash:
     checksum = hashlib.sha512()
     hash_file(path, checksum)
     return checksum
 
 
-def md5(path):
+def md5(path) -> hashlib.Hash:
     checksum = hashlib.md5()
     hash_file(path, checksum)
     return checksum
 
 
-def walk_files(path):
+def walk_files(path: str) -> Iterator[str]:
     if os.path.isdir(path):
         for root, dirs, files in os.walk(path):
             # Return all files.
@@ -181,7 +187,8 @@ def walk_files(path):
         yield path
 
 
-def walk_files_concurrently(source, target):
+def walk_files_concurrently(source: str,
+                            target: str) -> Iterator[Tuple[str, str]]:
     for source_filename in walk_files(source):
         target_filename = os.path.normpath(
             os.path.join(target, os.path.relpath(source_filename, source)))
