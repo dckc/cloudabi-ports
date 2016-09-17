@@ -7,12 +7,12 @@ from itertools import filterfalse, tee
 # Use the Path type only; the constructor is ambient authority
 from pathlib import Path as PathT, PurePath, PurePosixPath
 from shutil import copyfileobj
+from subprocess import PIPE
 from typing import (AnyStr, Callable, Generic, Iterator,
                     Tuple, Type, TypeVar, Union)
 from urllib.request import HTTPResponse, addinfourl
 import gzip
 import hashlib
-import subprocess
 import ssl
 
 Self = TypeVar('Self')
@@ -109,12 +109,13 @@ def copy_file(source: PathExt, target: PathExt, preserve_attributes: bool):
         raise Exception(source + ' is of an unsupported type')
 
 
-def diff(orig_dir: str, patched_dir: str, patch: str):
-    proc = subprocess.Popen(['diff', '-urN', orig_dir, patched_dir],
-                            stdout=subprocess.PIPE)
+def diff(orig_dir: PathExt, patched_dir: PathExt, patch: PathExt,
+         Popen):
+    proc = Popen(['diff', '-urN', str(orig_dir), str(patched_dir)],
+                 stdout=PIPE)
     minline = bytes('--- %s/' % orig_dir, encoding='ASCII')
     plusline = bytes('+++ %s/' % patched_dir, encoding='ASCII')
-    with open(patch, 'wb') as f:
+    with patch.open('wb') as f:
         for l in proc.stdout.readlines():
             if l.startswith(b'diff '):
                 # Omit lines that start with 'diff'. They serve
