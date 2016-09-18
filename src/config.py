@@ -41,8 +41,12 @@ DIR_BUILDROOT = object()
 PERL = object()
 
 RANDOM = object()
+USR = object()
+USR_LOCAL = object()
 
 Default = {
+    USR: '/usr',
+    USR_LOCAL: '/usr/local',
     DIR_BUILDROOT: '/usr/obj/cloudabi-ports',
     HOST_CC: '/usr/bin/cc',
     HOST_CXX: '/usr/bin/cc++',
