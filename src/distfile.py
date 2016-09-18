@@ -3,11 +3,10 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
-from hashlib import Hash
 from pathlib import PurePosixPath
 from random import Random as RandomT
 from shutil import copyfileobj
-from typing import Any, NamedTuple, cast
+from typing import Any, AbstractSet, NamedTuple, Set, cast
 from urllib.error import URLError
 import logging
 
@@ -24,10 +23,10 @@ class Distfile:
         ('subprocess', util.RunCommand),
         ('random', RandomT)])
 
-    def __init__(self, distdir: PathExt, io: Access, name: str, checksum: Hash,
-                 master_sites: List[str],
-                 patches: List[PathExt],
-                 unsafe_string_sources: List[str]) -> None:
+    def __init__(self, distdir: PathExt, io: Access, name: str, checksum: str,
+                 master_sites: Set[str],
+                 patches: Set[PathExt],
+                 unsafe_string_sources: AbstractSet[str]) -> None:
         for patch in patches:
             if not patch.exists():
                 raise Exception('Patch %s does not exist' % patch)

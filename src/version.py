@@ -4,7 +4,11 @@
 # See the LICENSE file for details.
 
 
-class SimpleVersion:
+class AnyVersion:
+    pass
+
+
+class SimpleVersion(AnyVersion):
 
     def __init__(self, version):
         # Turn the numbers into a list of integer values.
@@ -24,7 +28,7 @@ class SimpleVersion:
         return '.'.join(str(part) for part in self._numbers)
 
 
-class FullVersion:
+class FullVersion(AnyVersion):
 
     def __init__(self, epoch=0, version=SimpleVersion('0'), revision=1):
         self._epoch = epoch

@@ -3,7 +3,7 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
-from typing import Callable, Dict, Optional, Set, cast
+from typing import Callable, Dict, NamedTuple, Optional, Set, cast
 import logging
 
 from . import config
@@ -12,6 +12,7 @@ from .builder import BuildDirectory, BuildHandle, HostBuilder, TargetBuilder
 from .builder import Access
 from .distfile import Distfile
 from .util import PathExt
+from .version import AnyVersion
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ class HostPackage:
 
     def __init__(self, install_directory: PathExt,
                  io: Access,
-                 name: str, version: str, homepage :str, maintainer: str,
+                 name: str, version: AnyVersion,
+                 homepage :str, maintainer: str,
                  build_depends: Set[HostPackage],
                  lib_depends: Set[HostPackage],
                  distfiles: Dict[str, Distfile],
@@ -86,7 +88,7 @@ class TargetPackage:
 
     def __init__(self, install_directory: PathExt,
                  io: Access,
-                 arch: str, name: str, version: str, homepage: str,
+                 arch: str, name: str, version: AnyVersion, homepage: str,
                  maintainer: str,
                  host_packages: Dict[str, HostPackage],
                  lib_depends: Set[TargetPackage],

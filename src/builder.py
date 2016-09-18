@@ -11,6 +11,7 @@ from . import config
 from . import util
 from .distfile import Distfile
 from .util import PathExt
+from .version import AnyVersion
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class DiffCreator:
                   self._filename, self._subprocess)
 
 
-Access = NamedTuple('FH_Access', [
+Access = NamedTuple('B_Access', [
     ('subprocess', util.RunCommand),
     ('chdir', Callable[[PathExt], None]),
     ('getenv', Callable[[str], str])])
@@ -187,7 +188,7 @@ class FileHandle:
 
 class BuildHandle:
 
-    def __init__(self, builder: Builder, name: str, version: str,
+    def __init__(self, builder: Builder, name: str, version: AnyVersion,
                  distfiles: Dict[str, Distfile],
                  io: Access) -> None:
         self._builder = builder
