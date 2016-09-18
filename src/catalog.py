@@ -19,9 +19,10 @@ import time
 from . import config
 from . import rpm
 from . import util
-from .version import FullVersion, SimpleVersion
+from .version import FullVersion
 
 log = logging.getLogger(__name__)
+
 
 class Catalog:
 
@@ -132,7 +133,7 @@ class DebianCatalog(Catalog):
 
         # Optional, estimate in kB of disk space needed to install the package
         if installed_size is not None:
-            snippet += 'Installed-Size: %d\n' % math.ceil(installed_size/1024)
+            snippet += 'Installed-Size: %d\n' % math.ceil(installed_size / 1024)
 
         lib_depends = package.get_lib_depends()
         if lib_depends:
@@ -684,6 +685,7 @@ class OpenBSDCatalog(Catalog):
         ])
         return output
 
+
 class ArchLinuxCatalog(Catalog):
 
     def __init__(self, old_path, new_path):
@@ -739,7 +741,6 @@ class ArchLinuxCatalog(Catalog):
                     'version': version.get_archlinux_version(),
                 }
             )
-            lib_depends = package.get_lib_depends()
             for dep in sorted(pkg.get_archlinux_name() for pkg in package.get_lib_depends()):
                 f.write('depend = %s\n' % dep)
 
@@ -829,7 +830,6 @@ class CygwinCatalog(Catalog):
         arch = package.get_arch()
         prefix = '/usr' / arch
         package.extract(installdir / prefix[1:], prefix)
-        files = sorted(util.walk_files(installdir))
 
         util.make_dir(installdir)
 
@@ -849,7 +849,7 @@ class CygwinCatalog(Catalog):
                 f.write('arch: %s\n' % cygwin_arch)
                 f.write('setup-timestamp: %d\n' % int(time.time()))
                 for package, version in sorted(self._packages,
-                    key=lambda p:p[0].get_cygwin_name()):
+                    key=lambda p: p[0].get_cygwin_name()):
                     package_file_name = self._get_filename(package, version)
                     package_file = self._new_path / package_file_name
                     f.write(
@@ -868,8 +868,7 @@ class CygwinCatalog(Catalog):
                         f.write('requires: %(deps)s\n' % {
                             'deps': ' '.join(sorted(pkg.get_cygwin_name() for pkg in
                                 package.get_lib_depends()))
-                            }
-                        );
+                        })
                     f.write(
                         'install: %(filename)s %(size)s %(sha512)s\n' % {
                             'size': package_file.lstat().st_size,
