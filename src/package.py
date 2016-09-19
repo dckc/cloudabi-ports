@@ -52,7 +52,7 @@ class HostPackage:
 
     def build(self):
         # Skip this package if it has been built already.
-        if os.path.isdir(self._install_directory):
+        if self._install_directory.is_dir():
             return
 
         # Perform the build inside an empty buildroot.
@@ -100,7 +100,7 @@ class TargetPackage:
 
     def build(self):
         # Skip this package if it has been built already.
-        if not self._build_cmd or os.path.isdir(self._install_directory):
+        if not self._build_cmd or self._install_directory.is_dir():
             return
 
         # Perform the build inside a buildroot with its dependencies
@@ -129,10 +129,10 @@ class TargetPackage:
             if target_file.endswith('.template'):
                 # File is a template. Expand %%PREFIX%% tags.
                 target_file = target_file[:-9]
-                with open(source_file, 'r') as f:
+                with source_file.open('r') as f:
                     contents = f.read()
                 contents = contents.replace('%%PREFIX%%', expandpath)
-                with open(target_file, 'w') as f:
+                with target_file.open('w') as f:
                     f.write(contents)
                 shutil.copymode(source_file, target_file)
             else:
@@ -198,6 +198,6 @@ class TargetPackage:
         util.remove_and_make_dir(config.DIR_BUILDROOT)
         for dep in host_deps:
             dep.extract()
-        prefix = os.path.join(config.DIR_BUILDROOT, self._arch)
+        prefix = config.DIR_BUILDROOT / self._arch
         for dep in lib_depends:
             dep.extract(prefix, prefix)

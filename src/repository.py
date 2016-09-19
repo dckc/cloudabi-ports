@@ -43,16 +43,16 @@ class Repository:
                     break
 
             # Automatically add patches if none are given.
-            dirname = os.path.dirname(path)
+            dirname = path.parent
             if 'patches' not in distfile:
                 distfile['patches'] = (name[6:]
-                                       for name in os.listdir(dirname)
+                                       for name in list(dirname.iterdir())
                                        if name.startswith('patch-'))
             if 'unsafe_string_sources' not in distfile:
                 distfile['unsafe_string_sources'] = frozenset()
 
             # Turn patch filenames into full paths.
-            distfile['patches'] = {os.path.join(dirname, 'patch-' + patch)
+            distfile['patches'] = {dirname.pathjoin('patch-' + patch)
                                    for patch in distfile['patches']}
 
             if name in self._distfiles:
@@ -64,7 +64,7 @@ class Repository:
 
         def op_host_package(**kwargs):
             package = kwargs
-            package['resource_directory'] = os.path.dirname(path)
+            package['resource_directory'] = path.parent
             name = package['name']
             if name in self._deferred_host_packages:
                 raise Exception('%s is redeclaring packages %s' % (path, name))
@@ -72,7 +72,7 @@ class Repository:
 
         def op_package(**kwargs):
             package = kwargs
-            package['resource_directory'] = os.path.dirname(path)
+            package['resource_directory'] = path.parent
             name = package['name']
             for arch in config.ARCHITECTURES:
                 if (name, arch) in self._deferred_target_packages:
@@ -115,7 +115,7 @@ class Repository:
             'sites_sourceforge': op_sites_sourceforge,
         }
 
-        with open(path, 'r') as f:
+        with path.open('r') as f:
             exec(f.read(), identifiers, identifiers)
 
     def get_distfiles(self):
@@ -141,8 +141,8 @@ class Repository:
                     del package['lib_depends']
                 package['version'] = SimpleVersion(package['version'])
                 self._host_packages[name] = HostPackage(
-                    install_directory=os.path.join(
-                        self._install_directory,
+                    install_directory=(
+                        self._install_directory).pathjoin(
                         'host',
                         name),
                     distfiles=self._distfiles,
@@ -172,8 +172,8 @@ class Repository:
                     del package['lib_depends']
                 package['version'] = SimpleVersion(package['version'])
                 self._target_packages[(name, arch)] = TargetPackage(
-                    install_directory=os.path.join(
-                        self._install_directory, arch, name),
+                    install_directory=(
+                        self._install_directory) / arch / name,
                     arch=arch,
                     distfiles=self._distfiles,
                     host_packages=self._host_packages,
@@ -192,8 +192,7 @@ class Repository:
         packages = self._target_packages.copy()
         for arch in config.ARCHITECTURES:
             packages[('everything', arch)] = TargetPackage(
-                install_directory=os.path.join(self._install_directory, arch,
-                                               'everything'),
+                install_directory=self._install_directory / arch / 'everything',
                 arch=arch,
                 name='everything',
                 version=SimpleVersion('1.0'),

@@ -52,27 +52,27 @@ class FileHandle:
 
     def gnu_configure(self, args=[], inplace=False):
         for path in util.walk_files(self._path):
-            filename = os.path.basename(path)
+            filename = path.name
             if filename in {'config.guess', 'config.sub'}:
                 # Replace the config.guess and config.sub files by
                 # up-to-date copies. The copies provided by the tarball
                 # rarely support CloudABI.
-                os.unlink(path)
-                shutil.copy(os.path.join(config.DIR_RESOURCES, filename), path)
+                path.unlink()
+                shutil.copy(config.DIR_RESOURCES / filename, path)
             elif filename == 'ltmain.sh':
                 # Patch up libtool to archive object files in sorted
                 # order. This has been fixed in the meantime.
-                with open(path, 'r') as fin, open(path + '.new', 'w') as fout:
+                with path.open('r') as fin, (path + '.new').open('w') as fout:
                     for l in fin.readlines():
                         # Add sort to the pipeline.
                         fout.write(l.replace(
                             '-print | $NL2SP', '-print | sort | $NL2SP'))
                 shutil.copymode(path, path + '.new')
-                os.rename(path + '.new', path)
+                (path + '.new').rename(path)
             elif filename == 'configure':
                 # Patch up configure scripts to remove constructs that are known
                 # to fail, for example due to functions being missing.
-                with open(path, 'rb') as fin, open(path + '.new', 'wb') as fout:
+                with path.open('rb') as fin, (path + '.new').open('wb') as fout:
                     for l in fin.readlines():
                         # Bad C99 features test.
                         if l.startswith(b'#define showlist(...)'):
@@ -81,20 +81,20 @@ class FileHandle:
                             l = b'#define report(...) fprintf (stderr, __VA_ARGS__)\n'
                         fout.write(l)
                 shutil.copymode(path, path + '.new')
-                os.rename(path + '.new', path)
+                (path + '.new').rename(path)
 
         # Run the configure script in a separate directory.
         builddir = (self._path
                     if inplace
                     else self._builder._build_directory.get_new_directory())
         self._builder.gnu_configure(
-            builddir, os.path.join(self._path, 'configure'), args)
+            builddir, self._path / 'configure', args)
         return FileHandle(self._builder, builddir)
 
     def compile(self, args=[]):
         output = self._path + '.o'
-        os.chdir(os.path.dirname(self._path))
-        ext = os.path.splitext(self._path)[1]
+        os.chdir(self._path.parent)
+        ext = self._path.suffix
         if ext in {'.c', '.S'}:
             log.info('CC %s', self._path)
             subprocess.check_call(
@@ -124,7 +124,7 @@ class FileHandle:
         return FileHandle(self._builder._host_builder, self._path)
 
     def rename(self, dst):
-        os.rename(self._path, dst._path)
+        self._path.rename(dst._path)
 
     def cmake(self, args=[]):
         builddir = self._builder._build_directory.get_new_directory()
@@ -133,11 +133,11 @@ class FileHandle:
 
         # Skip directory names.
         while True:
-            entries = os.listdir(source_directory)
+            entries = list(source_directory.iterdir())
             if len(entries) != 1:
                 break
-            new_directory = os.path.join(source_directory, entries[0])
-            if not os.path.isdir(new_directory):
+            new_directory = source_directory / entries[0]
+            if not new_directory.is_dir():
                 break
             source_directory = new_directory
 
@@ -152,7 +152,7 @@ class FileHandle:
         self.run(['make', 'DESTDIR=' + stagedir] + args)
         return FileHandle(
             self._builder,
-            os.path.join(stagedir, self._builder.get_prefix()[1:]))
+            stagedir.pathjoin(self._builder.get_prefix()[1:]))
 
     def ninja(self):
         self.run(['ninja'])
@@ -162,13 +162,13 @@ class FileHandle:
         self.run(['DESTDIR=' + stagedir, 'ninja', 'install'])
         return FileHandle(
             self._builder,
-            os.path.join(stagedir, self._builder.get_prefix()[1:]))
+            stagedir.pathjoin(self._builder.get_prefix()[1:]))
 
     def open(self, mode):
-        return open(self._path, mode)
+        return self._path.open(mode)
 
     def path(self, path):
-        return FileHandle(self._builder, os.path.join(self._path, path))
+        return FileHandle(self._builder, self._path / path)
 
     def remove(self):
         util.remove(self._path)
@@ -178,7 +178,7 @@ class FileHandle:
 
     def symlink(self, contents):
         util.remove(self._path)
-        os.symlink(contents, self._path)
+        self._path.symlink_to(contents)
 
     def unhardcode_paths(self):
         self._builder.unhardcode_paths(self._path)
@@ -247,8 +247,8 @@ class BuildHandle:
         return self._builder.get_prefix()
 
     def resource(self, name):
-        source = os.path.join(self._resource_directory, name)
-        target = os.path.join(config.DIR_BUILDROOT, 'build', name)
+        source = self._resource_directory / name
+        target = config.DIR_BUILDROOT / 'build', name
         util.make_parent_dir(target)
         util.copy_file(source, target, False)
         return FileHandle(self._builder, target)
@@ -263,22 +263,22 @@ class BuildDirectory:
 
     def __init__(self):
         self._sequence_number = 0
-        self._builddir = os.path.join(config.DIR_BUILDROOT, 'build')
+        self._builddir = config.DIR_BUILDROOT / 'build'
 
     def get_new_archive(self):
-        path = os.path.join(self._builddir, 'lib%d.a' % self._sequence_number)
+        path = self._builddir.pathjoin('lib%d.a' % self._sequence_number)
         util.make_parent_dir(path)
         self._sequence_number += 1
         return path
 
     def get_new_directory(self):
-        path = os.path.join(self._builddir, str(self._sequence_number))
+        path = self._builddir.pathjoin(str(self._sequence_number))
         util.make_dir(path)
         self._sequence_number += 1
         return path
 
     def get_new_executable(self):
-        path = os.path.join(self._builddir, 'bin%d' % self._sequence_number)
+        path = self._builddir.pathjoin('bin%d' % self._sequence_number)
         util.make_parent_dir(path)
         self._sequence_number += 1
         return path
@@ -291,7 +291,7 @@ class HostBuilder:
         self._install_directory = install_directory
 
         self._cflags = [
-            '-O2', '-I' + os.path.join(self.get_prefix(), 'include'),
+            '-O2', '-I' + self.get_prefix().pathjoin('include'),
         ]
 
     def gnu_configure(self, builddir, script, args):
@@ -317,7 +317,7 @@ class HostBuilder:
     def get_gnu_triple():
         # Run config.guess to determine the GNU triple of the system
         # we're running on.
-        config_guess = os.path.join(config.DIR_RESOURCES, 'config.guess')
+        config_guess = config.DIR_RESOURCES / 'config.guess'
         triple = subprocess.check_output(config_guess)
         return str(triple, encoding='ASCII').strip()
 
@@ -327,12 +327,12 @@ class HostBuilder:
 
     def install(self, source, target):
         log.info('INSTALL %s->%s', source, target)
-        target = os.path.join(self._install_directory, target)
+        target = self._install_directory / target
         for source_file, target_file in util.walk_files_concurrently(
                 source, target):
             # As these are bootstrapping tools, there is no need to
             # preserve any documentation and locales.
-            path = os.path.relpath(target_file, target)
+            path = target_file.relative_to(target)
             if (path != 'lib/charset.alias' and
                 not path.startswith('share/doc/') and
                 not path.startswith('share/info/') and
@@ -349,8 +349,8 @@ class HostBuilder:
             'CXX=' + self.get_cxx(),
             'CFLAGS=' + ' '.join(self._cflags),
             'CXXFLAGS=' + ' '.join(self._cflags),
-            'LDFLAGS=-L' + os.path.join(self.get_prefix(), 'lib'),
-            'PATH=%s:%s' % (os.path.join(self.get_prefix(), 'bin'),
+            'LDFLAGS=-L' + self.get_prefix().pathjoin('lib'),
+            'PATH=%s:%s' % (self.get_prefix().pathjoin('bin'),
                             os.getenv('PATH')),
         ] + command)
 
@@ -368,8 +368,8 @@ class TargetBuilder:
         self._prefix = '/' + ''.join(
             random.choice(string.ascii_letters) for i in range(16))
 
-        self._bindir = os.path.join(config.DIR_BUILDROOT, 'bin')
-        self._localbase = os.path.join(config.DIR_BUILDROOT, self._arch)
+        self._bindir = config.DIR_BUILDROOT / 'bin'
+        self._localbase = config.DIR_BUILDROOT / self._arch
         self._cflags = [
             '-O2', '-Werror=implicit-function-declaration', '-Werror=date-time',
         ]
@@ -378,7 +378,7 @@ class TargetBuilder:
         self._host_builder = HostBuilder(build_directory, None)
 
     def _tool(self, name):
-        return os.path.join(self._bindir, '%s-%s' % (self._arch, name))
+        return self._bindir.pathjoin('%s-%s' % (self._arch, name))
 
     def archive(self, object_files):
         objs = sorted(object_files)
@@ -432,29 +432,29 @@ class TargetBuilder:
         return self._prefix
 
     def _unhardcode(self, source, target):
-        assert not os.path.islink(source)
-        with open(source, 'r') as f:
+        assert not source.is_symlink()
+        with source.open('r') as f:
             contents = f.read()
         contents = (contents
                     .replace(self.get_prefix(), '%%PREFIX%%')
                     .replace(self._localbase, '%%PREFIX%%'))
-        with open(target, 'w') as f:
+        with target.open('w') as f:
             f.write(contents)
 
     def unhardcode_paths(self, path):
         self._unhardcode(path, path + '.template')
         shutil.copymode(path, path + '.template')
-        os.unlink(path)
+        path.unlink()
 
     def install(self, source, target):
         log.info('INSTALL %s->%s', source, target)
-        target = os.path.join(self._install_directory, target)
+        target = self._install_directory / target
         for source_file, target_file in util.walk_files_concurrently(
                 source, target):
             util.make_parent_dir(target_file)
-            relpath = os.path.relpath(target_file, self._install_directory)
-            ext = os.path.splitext(source_file)[1]
-            if ext in {'.la', '.pc'} and not os.path.islink(source_file):
+            relpath = target_file.relative_to(self._install_directory)
+            ext = source_file.suffix
+            if ext in {'.la', '.pc'} and not source_file.is_symlink():
                 # Remove references to the installation prefix and the
                 # localbase directory from libtool archives and
                 # pkg-config files.

@@ -33,8 +33,8 @@ class CatalogSet:
                     return False
             else:
                 # A new package. Keep it.
-                new = os.path.join(tmpdir, str(len(do_rebuild)))
-                os.rename(path, new)
+                new = tmpdir.pathjoin(str(len(do_rebuild)))
+                path.rename(new)
                 do_rebuild.append(catalog)
 
         # Round 2: Do a rebuild to ensure that the build is
@@ -43,7 +43,7 @@ class CatalogSet:
         if do_rebuild:
             package.clean()
             for idx, catalog in enumerate(do_rebuild):
-                path1 = os.path.join(tmpdir, str(idx))
+                path1 = tmpdir.pathjoin(str(idx))
                 path2 = catalog.package(package, version)
                 if not util.file_contents_equal(path1, path2):
                     raise Exception(
