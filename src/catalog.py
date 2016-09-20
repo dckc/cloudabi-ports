@@ -3,36 +3,41 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
+from subprocess import PIPE
+from time import strftime, struct_time
+from typing import Callable, Optional, Set, Tuple
 import base64
 import collections
 import hashlib
 import logging
 import lzma
 import math
-import os
 import re
-import shutil
 import stat
-import subprocess
-import time
 
 from . import config
 from . import rpm
 from . import util
+from .package import TargetPackage as TPkg
+from .util import PathExt
 from .version import FullVersion
 
 log = logging.getLogger(__name__)
 
+_ClockFn = Callable[[], struct_time]
+
 
 class Catalog:
 
-    def __init__(self, old_path, new_path):
+    def __init__(self, old_path: PathExt, new_path: PathExt,
+                 subprocess: util.RunCommand) -> None:
         self._old_path = old_path
         self._new_path = new_path
-        self._packages = set()
+        self._packages = set()  # type: Set[Tuple[str, FullVersion]]
+        self._subprocess = subprocess
 
     @staticmethod
-    def _get_suggested_mode(path):
+    def _get_suggested_mode(path: PathExt) -> int:
         mode = path.lstat().st_mode
         if stat.S_ISLNK(mode):
             # Symbolic links.
@@ -45,28 +50,29 @@ class Catalog:
             return 0o444
 
     @staticmethod
-    def _sanitize_permissions(directory, directory_mode=0o555):
+    def _sanitize_permissions(directory: PathExt, directory_mode=0o555) -> None:
         for root, dirs, files in util.walk(directory):
             util.lchmod(root, directory_mode)
             for filename in files:
                 path = root / filename
                 util.lchmod(path, Catalog._get_suggested_mode(path))
 
-    @staticmethod
-    def _run_tar(args):
+    def _run_tar(self, args: List[str]) -> None:
+        subprocess = self._subprocess
+        platform = self._old_path.platform()
         subprocess.check_call([
-            config.DIR_BUILDROOT / 'bin/bsdtar'
+            str(platform(config.DIR_BUILDROOT) / 'bin/bsdtar')
         ] + args)
 
-    def insert(self, package, version, source):
+    def insert(self, package, version, source) -> None:
         target = (
-            self._new_path).pathjoin(self._get_filename(package, version))
+            self._new_path / self._get_filename(package, version))
         util.make_dir(self._new_path)
         util.remove(target)
         source.link(target)
         self._packages.add((package, version))
 
-    def lookup_at_version(self, package, version):
+    def lookup_at_version(self, package: TPkg, version: FullVersion) -> Optional[PathExt]:
         if self._old_path:
             path = (
                 self._old_path).pathjoin(
@@ -74,6 +80,9 @@ class Catalog:
             if path.exists():
                 return path
         return None
+
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
+        raise NotImplementedError('subclass must implement')
 
 
 class DebianCatalog(Catalog):
@@ -86,31 +95,34 @@ class DebianCatalog(Catalog):
         's390x', 'sparc'
     }
 
-    def __init__(self, old_path, new_path):
-        super(DebianCatalog, self).__init__(old_path, new_path)
+    def __init__(self, old_path: PathExt, new_path: PathExt,
+                 subprocess: util.RunCommand,
+                 gmtime: _ClockFn) -> None:
+        super(DebianCatalog, self).__init__(old_path, new_path, subprocess)
+        self._gmtime = gmtime
 
         # Scan the existing directory hierarchy to find the latest
         # version of all of the packages. We need to know this in order
         # to determine the Epoch and revision number for any new
         # packages we're going to build.
-        self._existing = collections.defaultdict(FullVersion)
+        self._existing = collections.defaultdict(FullVersion)  # type: Dict[str, FullVersion]
         if old_path:
             for root, dirs, files in util.walk(old_path):
-                for filename in files:
-                    parts = filename.split('_')
+                for file in files:
+                    parts = file.name.split('_')
                     if len(parts) == 3 and parts[2] == 'all.deb':
                         name = parts[0]
                         version = FullVersion.parse_debian(parts[1])
                         if self._existing[name] < version:
                             self._existing[name] = version
 
-    @staticmethod
-    def _get_filename(package, version):
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
         return '%s_%s_all.deb' % (
             package.get_debian_name(), version.get_debian_version())
 
     @staticmethod
-    def _get_control_snippet(package, version, installed_size=None):
+    def _get_control_snippet(package: TPkg, version: FullVersion,
+                             installed_size=None) -> str:
         """Returns a string suitable for writing to a .deb control file.
 
         For the fields refer to the Debian Policy Manual
@@ -141,9 +153,9 @@ class DebianCatalog(Catalog):
                 dep.get_debian_name() for dep in lib_depends))
         return snippet
 
-    def finish(self, private_key):
+    def finish(self, private_key: str) -> None:
         # Create package index.
-        def write_entry(f, package, version):
+        def write_entry(f, packageTPkg, version: FullVersion):
             f.write(self._get_control_snippet(package, version))
             filename = self._get_filename(package, version)
             path = self._new_path / filename
@@ -164,6 +176,7 @@ class DebianCatalog(Catalog):
                 write_entry(f_xz, package, version)
 
         # Link the index into the per-architecture directory.
+        (subprocess, gmtime) = self._subprocess, self._gmtime
         for arch in self._architectures:
             index_arch = (
                 self._new_path).pathjoin(
@@ -184,8 +197,8 @@ class DebianCatalog(Catalog):
         ) as f, subprocess.Popen([
             'gpg', '--local-user', private_key, '--armor',
             '--sign', '--clearsign', '--digest-algo', 'SHA256',
-        ], stdin=subprocess.PIPE, stdout=f) as proc:
-            def append(text):
+        ], stdin=PIPE, stdout=f) as proc:
+            def append(text: str):
                 proc.stdin.write(bytes(text, encoding='ASCII'))
             append(
                 'Suite: cloudabi\n'
@@ -194,7 +207,7 @@ class DebianCatalog(Catalog):
                 'Date: %s\n'
                 'SHA256:\n' % (
                 ' '.join(sorted(self._architectures)),
-                time.strftime("%a, %d %b %Y %H:%M:%S UTC", time.gmtime())))
+                strftime("%a, %d %b %Y %H:%M:%S UTC", gmtime())))
             for arch in sorted(self._architectures):
                 append(' %s %d cloudabi/binary-%s/Packages\n' %
                        (checksum, size, arch))
@@ -204,12 +217,14 @@ class DebianCatalog(Catalog):
     def lookup_latest_version(self, package):
         return self._existing[package.get_debian_name()]
 
-    def package(self, package, version):
+    def package(self, package: TPkg, version: FullVersion) -> PathExt:
+        subprocess = self._subprocess
         package.build()
         package.initialize_buildroot({'libarchive', 'llvm'})
         log.info('PKG %s', self._get_filename(package, version))
 
-        rootdir = config.DIR_BUILDROOT
+        platform = self._old_path.platform()
+        rootdir = platform(config.DIR_BUILDROOT)
         debian_binary = rootdir / 'debian-binary'
         controldir = rootdir / 'control'
         datadir = rootdir / 'data'
@@ -218,19 +233,19 @@ class DebianCatalog(Catalog):
         with debian_binary.open('w') as f:
             f.write('2.0\n')
 
-        def tar(directory):
+        def tar(directory: PathExt):
             self._sanitize_permissions(directory)
             self._run_tar([
-                '-cJf', directory + '.tar.xz',
-                '-C', directory,
+                '-cJf', str(directory + '.tar.xz'),
+                '-C', str(directory),
                 '.',
             ])
 
         # Create 'data.tar.xz' tarball that contains the files that need
         # to be installed by the package.
-        prefix = '/usr'.pathjoin(package.get_arch())
+        prefix = platform(config.USR) / package.get_arch()
         util.make_dir(datadir)
-        package.extract(datadir / prefix[1:], prefix)
+        package.extract(datadir / prefix.relative_to(prefix.root), prefix)
         tar(datadir)
 
         # Create 'control.tar.xz' tarball that contains the control files.
@@ -246,57 +261,59 @@ class DebianCatalog(Catalog):
         tar(controldir)
 
         path = rootdir / 'output.txz'
-        subprocess.check_call([
+        subprocess.check_call([str(arg) for arg in [
             rootdir / 'bin/llvm-ar', 'rc', path,
             debian_binary, controldir + '.tar.xz', datadir + '.tar.xz',
-        ])
+        ]])
         return path
 
 
 class FreeBSDCatalog(Catalog):
 
-    def __init__(self, old_path, new_path):
-        super(FreeBSDCatalog, self).__init__(old_path, new_path)
+    def __init__(self, old_path: PathExt, new_path: PathExt,
+                 subprocess: util.RunCommand) -> None:
+        super(FreeBSDCatalog, self).__init__(old_path, new_path, subprocess)
 
         # Scan the existing directory hierarchy to find the latest
         # version of all of the packages. We need to know this in order
         # to determine the Epoch and revision number for any new
         # packages we're going to build.
-        self._existing = collections.defaultdict(FullVersion)
+        self._existing = collections.defaultdict(FullVersion)  # type: Dict[str, FullVersion]
         if old_path:
             for root, dirs, files in util.walk(old_path):
-                for filename in files:
-                    parts = filename.rsplit('-', 1)
+                for file in files:
+                    parts = file.name.rsplit('-', 1)
                     if len(parts) == 2 and parts[1].endswith('.txz'):
                         name = parts[0]
                         version = FullVersion.parse_freebsd(parts[1][:-4])
                         if self._existing[name] < version:
                             self._existing[name] = version
 
-    @staticmethod
-    def _get_filename(package, version):
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
         return '%s-%s.txz' % (package.get_freebsd_name(),
                               version.get_freebsd_version())
 
-    def finish(self, private_key):
+    def finish(self, private_key: str):
+        subprocess = self._subprocess
         subprocess.check_call([
-            'pkg', 'repo', self._new_path, private_key,
+            'pkg', 'repo', str(self._new_path), private_key,
         ])
         # TODO(ed): Copy in some of the old files to keep clients happy.
 
-    def lookup_latest_version(self, package):
+    def lookup_latest_version(self, package: TPkg) -> FullVersion:
         return self._existing[package.get_freebsd_name()]
 
-    def package(self, package, version):
+    def package(self, package: TPkg, version: FullVersion) -> PathExt:
         package.build()
         package.initialize_buildroot({'libarchive'})
         log.info('PKG %s', self._get_filename(package, version))
 
         # The package needs to be installed in /usr/local/<arch> on the
         # FreeBSD system.
-        installdir = config.DIR_BUILDROOT / 'install'
+        platform = self._old_path.platform()
+        installdir = platform(config.DIR_BUILDROOT) / 'install'
         arch = package.get_arch()
-        prefix = '/usr/local' / arch
+        prefix = platform(config.USR_LOCAL) / arch
         package.extract(installdir, prefix)
         files = sorted(util.walk_files(installdir))
 
@@ -327,7 +344,7 @@ class FreeBSDCatalog(Catalog):
                 '\"%s\":{"origin":"devel/%s","version":"0"}' % (dep, dep)
                 for dep in sorted(pkg.get_freebsd_name() for pkg in deps)
             )
-        compact_manifest = config.DIR_BUILDROOT.pathjoin(
+        compact_manifest = platform(config.DIR_BUILDROOT).pathjoin(
                                         '+COMPACT_MANIFEST')
         with compact_manifest.open('w') as f:
             f.write(base_manifest)
@@ -335,7 +352,7 @@ class FreeBSDCatalog(Catalog):
 
         # Create the fill manifest.
         if files:
-            manifest = config.DIR_BUILDROOT.pathjoin('+MANIFEST')
+            manifest = platform(config.DIR_BUILDROOT) / '+MANIFEST'
             with manifest.open('w') as f:
                 f.write(base_manifest)
                 f.write(',"files":{')
@@ -349,8 +366,8 @@ class FreeBSDCatalog(Catalog):
             manifest = compact_manifest
 
         # Create the package.
-        output = config.DIR_BUILDROOT / 'output.tar.xz'
-        listing = config.DIR_BUILDROOT / 'listing'
+        output = platform(config.DIR_BUILDROOT) / 'output.tar.xz'
+        listing = platform(config.DIR_BUILDROOT) / 'listing'
         with listing.open('w') as f:
             # Leading files in tarball.
             f.write('#mtree\n')
@@ -372,7 +389,7 @@ class FreeBSDCatalog(Catalog):
                     f.write(
                         '%s type=file mode=0%o uname=root gname=wheel time=0 contents=%s\n' %
                         (fullpath, self._get_suggested_mode(path), path))
-        self._run_tar(['-cJf', output, '-C', installdir, '@' + listing])
+        self._run_tar(['-cJf', str(output), '-C', str(installdir), '@' + str(listing)])
         return output
 
 
@@ -380,27 +397,27 @@ class HomebrewCatalog(Catalog):
 
     _OSX_VERSIONS = {'el_capitan', 'mavericks', 'yosemite'}
 
-    def __init__(self, old_path, new_path, url):
-        super(HomebrewCatalog, self).__init__(old_path, new_path)
+    def __init__(self, old_path: PathExt, new_path: PathExt, url: str,
+                 subprocess: util.RunCommand) -> None:
+        super(HomebrewCatalog, self).__init__(old_path, new_path, subprocess)
         self._url = url
 
         # Scan the existing directory hierarchy to find the latest
         # version of all of the packages. We need to know this in order
         # to determine the Epoch and revision number for any new
         # packages we're going to build.
-        self._existing = collections.defaultdict(FullVersion)
+        self._existing = collections.defaultdict(FullVersion)  # type: Dict[str, FullVersion]
         if old_path:
             for root, dirs, files in util.walk(old_path):
-                for filename in files:
-                    parts = filename.split('|', 1)
+                for file in files:
+                    parts = file.name.split('|', 1)
                     if len(parts) == 2:
                         name = parts[0]
                         version = FullVersion.parse_homebrew(parts[1])
                         if self._existing[name] < version:
                             self._existing[name] = version
 
-    @staticmethod
-    def _get_filename(package, version):
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
         return '%s|%s' % (package.get_homebrew_name(),
                           version.get_homebrew_version())
 
@@ -498,11 +515,7 @@ class HomebrewCatalog(Catalog):
 
 class NetBSDCatalog(Catalog):
 
-    def __init__(self, old_path, new_path):
-        super(NetBSDCatalog, self).__init__(old_path, new_path)
-
-    @staticmethod
-    def _get_filename(package, version):
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
         return '%s-%s.tgz' % (package.get_netbsd_name(),
                               version.get_netbsd_version())
 
@@ -517,9 +530,9 @@ class NetBSDCatalog(Catalog):
 
         # The package needs to be installed in /usr/pkg/<arch> on the
         # NetBSD system.
-        installdir = config.DIR_BUILDROOT / 'install'
+        installdir = os.path.join(config.DIR_BUILDROOT, 'install')
         arch = package.get_arch()
-        prefix = '/usr/pkg' / arch
+        prefix = os.path.join('/usr/pkg', arch)
         package.extract(installdir, prefix)
         files = sorted(util.walk_files(installdir))
 
@@ -578,11 +591,7 @@ class NetBSDCatalog(Catalog):
 
 class OpenBSDCatalog(Catalog):
 
-    def __init__(self, old_path, new_path):
-        super(OpenBSDCatalog, self).__init__(old_path, new_path)
-
-    @staticmethod
-    def _get_filename(package, version):
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
         return '%s-%s.tgz' % (package.get_openbsd_name(),
                               version.get_openbsd_version())
 
@@ -688,22 +697,24 @@ class OpenBSDCatalog(Catalog):
 
 class ArchLinuxCatalog(Catalog):
 
-    def __init__(self, old_path, new_path):
-        super(ArchLinuxCatalog, self).__init__(old_path, new_path)
+    def __init__(self, old_path: PathExt, new_path: PathExt,
+                 subprocess: util.RunCommand,
+                 chdir: Callable[[PathExt], None]) -> None:
+        super(ArchLinuxCatalog, self).__init__(old_path, new_path, subprocess)
+        self._chdir = chdir
 
-        self._existing = collections.defaultdict(FullVersion)
+        self._existing = collections.defaultdict(FullVersion)  # type: Dict[str, FullVersion]
         if old_path:
             for root, dirs, files in util.walk(old_path):
-                for filename in files:
-                    parts = filename.rsplit('-', 3)
+                for file in files:
+                    parts = file.name.rsplit('-', 3)
                     if len(parts) == 4 and parts[3] == 'any.pkg.tar.xz':
                         name = parts[0]
                         version = FullVersion.parse_archlinux(parts[1] + '-' + parts[2])
                         if self._existing[name] < version:
                             self._existing[name] = version
 
-    @staticmethod
-    def _get_filename(package, version):
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
         return '%s-%s-any.pkg.tar.xz' % (package.get_archlinux_name(),
                                          version.get_archlinux_version())
 
@@ -783,6 +794,7 @@ class ArchLinuxCatalog(Catalog):
         return output
 
     def finish(self, private_key):
+        subprocess = self._subprocess
         for package, version in self._packages:
             package_file = self._get_filename(package, version)
             subprocess.check_call([
@@ -792,54 +804,55 @@ class ArchLinuxCatalog(Catalog):
         db_file = self._new_path / 'cloudabi-ports.db.tar.xz'
         packages = [self._new_path.pathjoin(self._get_filename(*p)) for p in self._packages]
         # Ensure that repo-add as a valid working directory.
-        os.chdir('/')
+        self._chdir('/')
         subprocess.check_call(['repo-add', '-s', '-k', private_key, db_file] + packages)
 
 
 class CygwinCatalog(Catalog):
 
-    def __init__(self, old_path, new_path):
-        super(CygwinCatalog, self).__init__(old_path, new_path)
+    def __init__(self, old_path: PathExt, new_path: PathExt,
+                 subprocess: util.RunCommand) -> None:
+        super(CygwinCatalog, self).__init__(old_path, new_path, subprocess)
 
-        self._existing = collections.defaultdict(FullVersion)
+        self._existing = collections.defaultdict(FullVersion)  # type: Dict[str, FullVersion]
         if old_path:
             for root, dirs, files in util.walk(old_path):
-                for filename in files:
-                    if filename.endswith('.tar.xz'):
-                        parts = filename[:-7].rsplit('-', 2)
+                for file in files:
+                    if file.name.endswith('.tar.xz'):
+                        parts = file.name[:-7].rsplit('-', 2)
                         if len(parts) == 3:
                             name = parts[0]
                             version = FullVersion.parse_cygwin(parts[1] + '-' + parts[2])
                             if self._existing[name] < version:
                                 self._existing[name] = version
 
-    @staticmethod
-    def _get_filename(package, version):
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
         return '%s-%s.tar.xz' % (package.get_cygwin_name(),
                                  version.get_cygwin_version())
 
     def lookup_latest_version(self, package):
         return self._existing[package.get_cygwin_name()]
 
-    def package(self, package, version):
+    def package(self, package: TPkg, version: FullVersion):
         package.build()
         package.initialize_buildroot({'libarchive'})
         log.info('PKG %s', self._get_filename(package, version))
 
-        installdir = config.DIR_BUILDROOT / 'install'
+        platform = self._old_path.platform()
+        installdir = platform(config.DIR_BUILDROOT) / 'install'
         arch = package.get_arch()
-        prefix = '/usr' / arch
-        package.extract(installdir / prefix[1:], prefix)
+        prefix = platform(config.USR) / arch
+        package.extract(installdir / prefix.relative_to(prefix.root), prefix)
 
         util.make_dir(installdir)
 
-        output = config.DIR_BUILDROOT / 'output.tar.xz'
+        output = platform(config.DIR_BUILDROOT) / 'output.tar.xz'
 
-        self._run_tar(['-cJf', output, '-C', installdir, '.'])
+        self._run_tar(['-cJf', str(output), '-C', str(installdir), '.'])
 
         return output
 
-    def finish(self, private_key):
+    def finish(self, private_key: str):
         for cygwin_arch in ('x86', 'x86_64'):
             cygwin_arch_dir = self._new_path / cygwin_arch
             util.make_dir(cygwin_arch_dir)
@@ -884,11 +897,7 @@ class CygwinCatalog(Catalog):
 
 class RedHatCatalog(Catalog):
 
-    def __init__(self, old_path, new_path):
-        super(RedHatCatalog, self).__init__(old_path, new_path)
-
-    @staticmethod
-    def _get_filename(package, version):
+    def _get_filename(self, package: TPkg, version: FullVersion) -> str:
         return '%s-%s.noarch.rpm' % (package.get_redhat_name(),
                                      version.get_redhat_version())
 

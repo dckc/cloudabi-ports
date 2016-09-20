@@ -3,31 +3,30 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
+from random import Random as RandomT
+from typing import Any, Callable, Dict, List, IO, NamedTuple, Optional, cast
 import logging
-import os
-import random
-import shutil
-import string
-import subprocess
 
 from . import config
 from . import util
+from .distfile import Distfile
+from .util import PathExt
+from .version import AnyVersion
 
 log = logging.getLogger(__name__)
-
-def _chdir(path):
-    util.make_dir(path)
-    os.chdir(path)
 
 
 class DiffCreator:
 
-    def __init__(self, source_directory, build_directory, filename):
+    def __init__(self, source_directory: PathExt,
+                 build_directory: BuildDirectory,
+                 filename: PathExt, subprocess: util.RunCommand) -> None:
         self._source_directory = source_directory
         self._build_directory = build_directory
         self._filename = filename
+        self._subprocess = subprocess
 
-    def __enter__(self):
+    def __enter__(self) -> None:
         # Create a backup of the source directory.
         self._backup_directory = self._build_directory.get_new_directory()
         for source_file, backup_file in util.walk_files_concurrently(
@@ -35,17 +34,24 @@ class DiffCreator:
             util.make_parent_dir(backup_file)
             util.copy_file(source_file, backup_file, False)
 
-    def __exit__(self, type, value, traceback):
+    def __exit__(self, type, value, traceback) -> None:
         # Create a diff to store the changes that were made to the original.
         util.diff(self._backup_directory, self._source_directory,
-                  self._filename)
+                  self._filename, self._subprocess)
+
+
+Access = NamedTuple('B_Access', [
+    ('subprocess', util.RunCommand),
+    ('chdir', Callable[[PathExt], None]),
+    ('getenv', Callable[[str], str])])
 
 
 class FileHandle:
 
-    def __init__(self, builder, path):
+    def __init__(self, builder: Builder, path: PathExt, io: Access) -> None:
         self._builder = builder
         self._path = path
+        self._io = io
 
     def __str__(self):
         return self._path
@@ -58,7 +64,7 @@ class FileHandle:
                 # up-to-date copies. The copies provided by the tarball
                 # rarely support CloudABI.
                 path.unlink()
-                shutil.copy(config.DIR_RESOURCES / filename, path)
+                path.open('wb').write(config.RESOURCES[filename])
             elif filename == 'ltmain.sh':
                 # Patch up libtool to archive object files in sorted
                 # order. This has been fixed in the meantime.
@@ -67,7 +73,7 @@ class FileHandle:
                         # Add sort to the pipeline.
                         fout.write(l.replace(
                             '-print | $NL2SP', '-print | sort | $NL2SP'))
-                shutil.copymode(path, path + '.new')
+                path.copymode(path + '.new')
                 (path + '.new').rename(path)
             elif filename == 'configure':
                 # Patch up configure scripts to remove constructs that are known
@@ -80,7 +86,7 @@ class FileHandle:
                         elif l.startswith(b'#define report(test,...)'):
                             l = b'#define report(...) fprintf (stderr, __VA_ARGS__)\n'
                         fout.write(l)
-                shutil.copymode(path, path + '.new')
+                path.copymode(path + '.new')
                 (path + '.new').rename(path)
 
         # Run the configure script in a separate directory.
@@ -89,11 +95,12 @@ class FileHandle:
                     else self._builder._build_directory.get_new_directory())
         self._builder.gnu_configure(
             builddir, self._path / 'configure', args)
-        return FileHandle(self._builder, builddir)
+        return FileHandle(self._builder, builddir, self._io)
 
     def compile(self, args=[]):
+        subprocess = self._io.subprocess
         output = self._path + '.o'
-        os.chdir(self._path.parent)
+        self._io.chdir(self._path.parent)
         ext = self._path.suffix
         if ext in {'.c', '.S'}:
             log.info('CC %s', self._path)
@@ -107,9 +114,10 @@ class FileHandle:
                 args + ['-c', '-o', output, self._path])
         else:
             raise Exception('Unknown file extension: %s' % ext)
-        return FileHandle(self._builder, output)
+        return FileHandle(self._builder, output, self._io)
 
-    def debug_shell(self):
+    def debug_shell(self) -> None:
+        os = self._io
         self.run([
             'HOME=' + os.getenv('HOME'),
             'LC_CTYPE=' + os.getenv('LC_CTYPE'),
@@ -117,29 +125,21 @@ class FileHandle:
             'sh',
         ])
 
-    def diff(self, filename):
-        return DiffCreator(self._path, self._builder._build_directory, filename)
+    def diff(self, filename: PathExt) -> DiffCreator:
+        return DiffCreator(self._path, self._builder._build_directory, filename,
+                           self._io.subprocess)
 
-    def host(self):
-        return FileHandle(self._builder._host_builder, self._path)
+    def host(self) -> FileHandle:
+        builder = cast(TargetBuilder, self._builder)
+        return FileHandle(builder._host_builder, self._path, self._io)
 
-    def rename(self, dst):
+    def rename(self, dst: FileHandle) -> None:
         self._path.rename(dst._path)
 
-    def cmake(self, args=[]):
+    def cmake(self, args: List[str]=[]) -> FileHandle:
         builddir = self._builder._build_directory.get_new_directory()
         self._builder.cmake(builddir, self._path, args)
-        return FileHandle(self._builder, builddir)
-
-        # Skip directory names.
-        while True:
-            entries = list(source_directory.iterdir())
-            if len(entries) != 1:
-                break
-            new_directory = source_directory / entries[0]
-            if not new_directory.is_dir():
-                break
-            source_directory = new_directory
+        return FileHandle(self._builder, builddir, self._io)
 
     def install(self, path='.'):
         self._builder.install(self._path, path)
@@ -152,7 +152,8 @@ class FileHandle:
         self.run(['make', 'DESTDIR=' + stagedir] + args)
         return FileHandle(
             self._builder,
-            stagedir.pathjoin(self._builder.get_prefix()[1:]))
+            stagedir.pathjoin(self._builder.get_prefix()[1:]),
+            self._io)
 
     def ninja(self):
         self.run(['ninja'])
@@ -162,21 +163,22 @@ class FileHandle:
         self.run(['DESTDIR=' + stagedir, 'ninja', 'install'])
         return FileHandle(
             self._builder,
-            stagedir.pathjoin(self._builder.get_prefix()[1:]))
+            stagedir.pathjoin(self._builder.get_prefix()[1:]),
+            self._io)
 
-    def open(self, mode):
+    def open(self, mode: str) -> IO[Any]:
         return self._path.open(mode)
 
-    def path(self, path):
-        return FileHandle(self._builder, self._path / path)
+    def path(self, path: str) -> FileHandle:
+        return FileHandle(self._builder, self._path / path, self._io)
 
-    def remove(self):
+    def remove(self) -> None:
         util.remove(self._path)
 
-    def run(self, command):
+    def run(self, command: List[str]) -> None:
         self._builder.run(self._path, command)
 
-    def symlink(self, contents):
+    def symlink(self, contents: str) -> None:
         util.remove(self._path)
         self._path.symlink_to(contents)
 
@@ -186,72 +188,77 @@ class FileHandle:
 
 class BuildHandle:
 
-    def __init__(self, builder, name, version, distfiles, resource_directory):
+    def __init__(self, builder: Builder, name: str, version: AnyVersion,
+                 distfiles: Dict[str, Distfile],
+                 io: Access) -> None:
         self._builder = builder
         self._name = name
         self._version = version
         self._distfiles = distfiles
-        self._resource_directory = resource_directory
+        self._io = io
 
     def archive(self, objects):
         return FileHandle(self._builder,
-                          self._builder.archive(obj._path for obj in objects))
+                          self._builder.archive(obj._path for obj in objects),
+                          self._io)
 
-    def cc(self):
+    def cc(self) -> str:
         return self._builder.get_cc()
 
-    def cflags(self):
+    def cflags(self) -> str:
         return ' '.join(self._builder.get_cflags())
 
-    def cpu(self):
+    def cpu(self) -> str:
         return self._builder.get_cpu()
 
-    def cxx(self):
+    def cxx(self) -> str:
         return self._builder.get_cxx()
 
-    def cxxflags(self):
+    def cxxflags(self) -> str:
         return ' '.join(self._builder.get_cxxflags())
 
     @staticmethod
-    def endian():
+    def endian() -> str:
         # TODO(ed): Extend this once we support big endian CPUs as well.
         return 'little'
 
-    def executable(self, objects):
+    def executable(self, objects: List[FileHandle]) -> FileHandle:
         objs = sorted(obj._path for obj in objects)
         output = self._builder._build_directory.get_new_executable()
         log.info('LD %s', output)
+        subprocess = self._io.subprocess
         subprocess.check_call([self._builder.get_cc(), '-o', output] + objs)
-        return FileHandle(self._builder, output)
+        return FileHandle(self._builder, output, self._io)
 
     def extract(self, name='%(name)s-%(version)s'):
         return FileHandle(
             self._builder,
             self._distfiles[
                 name % {'name': self._name, 'version': self._version}
-            ].extract(self._builder._build_directory.get_new_directory())
+            ].extract(self._builder._build_directory.get_new_directory()),
+            self._io
         )
 
-    def gnu_triple(self):
+    def gnu_triple(self) -> str:
         return self._builder.get_gnu_triple()
 
     def host(self):
         return BuildHandle(
             self._builder._host_builder, self._name, self._version,
-            self._distfiles, self._resource_directory)
+            self._distfiles, self._io)
 
-    def localbase(self):
+    def localbase(self) -> str:
         return self._builder.get_localbase()
 
-    def prefix(self):
+    def prefix(self) -> PathExt:
         return self._builder.get_prefix()
 
-    def resource(self, name):
-        source = self._resource_directory / name
-        target = config.DIR_BUILDROOT / 'build', name
+    def resource(self, name: str) -> FileHandle:
+        root = self._builder._platform(config.DIR_BUILDROOT)
+        target = root / 'build' / name
         util.make_parent_dir(target)
-        util.copy_file(source, target, False)
-        return FileHandle(self._builder, target)
+        target.open('wb').write(config.RESOURCES[name])
+        return FileHandle(self._builder, target, self._io)
 
     @staticmethod
     def stack_direction():
@@ -261,9 +268,9 @@ class BuildHandle:
 
 class BuildDirectory:
 
-    def __init__(self):
+    def __init__(self, platform: Callable[[object], PathExt]) -> None:
         self._sequence_number = 0
-        self._builddir = config.DIR_BUILDROOT / 'build'
+        self._builddir = platform(config.DIR_BUILDROOT) / 'build'
 
     def get_new_archive(self):
         path = self._builddir.pathjoin('lib%d.a' % self._sequence_number)
@@ -284,14 +291,45 @@ class BuildDirectory:
         return path
 
 
-class HostBuilder:
-
-    def __init__(self, build_directory, install_directory):
+class Builder:
+    def __init__(self, build_directory: BuildDirectory,
+                 install_directory: PathExt, io: Access) -> None:
         self._build_directory = build_directory
         self._install_directory = install_directory
+        self._platform = install_directory.platform()
+        self._io = io
+
+    def cmake(self, builddir: PathExt, srcdir: PathExt,
+              args: List[str]=[]) -> FileHandle: pass
+
+    def run(self, cwd: PathExt, command: List[str]) -> None: pass
+
+    def get_cc(self) -> str: pass
+
+    def get_cflags(self) -> List[str]: pass
+
+    def get_cpu(self) -> str: pass
+
+    def get_cxx(self) -> str: pass
+
+    def get_cxxflags(self) -> List[str]: pass
+
+    def get_gnu_triple(self) -> str: pass
+
+    def get_localbase(self) -> str: pass
+
+    def get_prefix(self) -> PathExt: pass
+
+
+class HostBuilder(Builder):
+
+    def __init__(self, build_directory: BuildDirectory,
+                 install_directory: Optional[PathExt],
+                 io: Access) -> None:
+        Builder.__init__(self, build_directory, install_directory, io)
 
         self._cflags = [
-            '-O2', '-I' + self.get_prefix().pathjoin('include'),
+            '-O2', '-I' + str(self.get_prefix().pathjoin('include')),
         ]
 
     def gnu_configure(self, builddir, script, args):
@@ -302,22 +340,20 @@ class HostBuilder:
             'cmake', sourcedir, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
             '-DCMAKE_INSTALL_PREFIX=' + self.get_prefix()] + args)
 
-    @staticmethod
-    def get_cc():
-        return config.HOST_CC
+    def get_cc(self) -> str:
+        return str(self._platform(config.HOST_CC))
 
-    def get_cflags(self):
+    def get_cflags(self) -> List[str]:
         return self._cflags
 
-    @staticmethod
-    def get_cxx():
-        return config.HOST_CXX
+    def get_cxx(self) -> str:
+        return str(self._platform(config.HOST_CXX))
 
-    @staticmethod
-    def get_gnu_triple():
+    def get_gnu_triple(self):
         # Run config.guess to determine the GNU triple of the system
         # we're running on.
         config_guess = config.DIR_RESOURCES / 'config.guess'
+        subprocess = self._io.subprocess
         triple = subprocess.check_output(config_guess)
         return str(triple, encoding='ASCII').strip()
 
@@ -325,14 +361,14 @@ class HostBuilder:
     def get_prefix():
         return config.DIR_BUILDROOT
 
-    def install(self, source, target):
+    def install(self, source: PathExt, target: PathExt) -> None:
         log.info('INSTALL %s->%s', source, target)
         target = self._install_directory / target
         for source_file, target_file in util.walk_files_concurrently(
                 source, target):
             # As these are bootstrapping tools, there is no need to
             # preserve any documentation and locales.
-            path = target_file.relative_to(target)
+            path = str(target_file.relative_to(target))
             if (path != 'lib/charset.alias' and
                 not path.startswith('share/doc/') and
                 not path.startswith('share/info/') and
@@ -341,12 +377,14 @@ class HostBuilder:
                 util.make_parent_dir(target_file)
                 util.copy_file(source_file, target_file, False)
 
-    def run(self, cwd, command):
-        _chdir(cwd)
+    def run(self, cwd: PathExt, command: List[str]) -> None:
+        os = self._io
+        os.chdir(cwd)
+        subprocess = self._io.subprocess
         subprocess.check_call([
             'env',
-            'CC=' + self.get_cc(),
-            'CXX=' + self.get_cxx(),
+            'CC=' + str(self.get_cc()),
+            'CXX=' + str(self.get_cxx()),
             'CFLAGS=' + ' '.join(self._cflags),
             'CXXFLAGS=' + ' '.join(self._cflags),
             'LDFLAGS=-L' + self.get_prefix().pathjoin('lib'),
@@ -355,32 +393,34 @@ class HostBuilder:
         ] + command)
 
 
-class TargetBuilder:
+class TargetBuilder(Builder):
 
-    def __init__(self, build_directory, install_directory, arch):
-        self._build_directory = build_directory
-        self._install_directory = install_directory
+    def __init__(self, build_directory: BuildDirectory,
+                 install_directory: PathExt, arch: str,
+                 io: Access) -> None:
+        Builder.__init__(self, build_directory, install_directory, io)
         self._arch = arch
 
         # Pick a random prefix directory. That way the build will fail
         # due to nondeterminism in case our piece of software hardcodes
         # the prefix directory.
-        self._prefix = '/' + ''.join(
-            random.choice(string.ascii_letters) for i in range(16))
+        platform = install_directory.platform()
+        self._prefix = platform(config.RANDOM)
 
-        self._bindir = config.DIR_BUILDROOT / 'bin'
-        self._localbase = config.DIR_BUILDROOT / self._arch
+        self._bindir = platform(config.DIR_BUILDROOT) / 'bin'
+        self._localbase = platform(config.DIR_BUILDROOT) / self._arch
         self._cflags = [
             '-O2', '-Werror=implicit-function-declaration', '-Werror=date-time',
         ]
 
         # In case we need to build software for the host system.
-        self._host_builder = HostBuilder(build_directory, None)
+        self._host_builder = HostBuilder(build_directory, None, self._io)
 
-    def _tool(self, name):
-        return self._bindir.pathjoin('%s-%s' % (self._arch, name))
+    def _tool(self, name) -> str:
+        return str(self._bindir.pathjoin('%s-%s' % (self._arch, name)))
 
     def archive(self, object_files):
+        subprocess = self._io.subprocess
         objs = sorted(object_files)
         output = self._build_directory.get_new_archive()
         log.info('AR %s', output)
@@ -407,31 +447,31 @@ class TargetBuilder:
             '-DCMAKE_SYSTEM_PROCESSOR=' + self._arch.split('-')[0],
             '-DUNIX=YES'] + args)
 
-    def get_cc(self):
+    def get_cc(self) -> str:
         return self._tool('cc')
 
-    def get_cflags(self):
+    def get_cflags(self) -> List[str]:
         return self._cflags
 
-    def get_cpu(self):
+    def get_cpu(self) -> str:
         return self._arch.split('-', 1)[0]
 
-    def get_cxx(self):
+    def get_cxx(self) -> str:
         return self._tool('c++')
 
-    def get_cxxflags(self):
+    def get_cxxflags(self) -> List[str]:
         return self._cflags
 
-    def get_gnu_triple(self):
+    def get_gnu_triple(self) -> str:
         return self._arch
 
-    def get_localbase(self):
-        return self._localbase
+    def get_localbase(self) -> str:
+        return str(self._localbase)
 
-    def get_prefix(self):
+    def get_prefix(self) -> PathExt:
         return self._prefix
 
-    def _unhardcode(self, source, target):
+    def _unhardcode(self, source: PathExt, target: PathExt) -> None:
         assert not source.is_symlink()
         with source.open('r') as f:
             contents = f.read()
@@ -443,16 +483,16 @@ class TargetBuilder:
 
     def unhardcode_paths(self, path):
         self._unhardcode(path, path + '.template')
-        shutil.copymode(path, path + '.template')
+        path.copymode(path + '.template')
         path.unlink()
 
-    def install(self, source, target):
+    def install(self, source: PathExt, target: PathExt) -> None:
         log.info('INSTALL %s->%s', source, target)
         target = self._install_directory / target
         for source_file, target_file in util.walk_files_concurrently(
                 source, target):
             util.make_parent_dir(target_file)
-            relpath = target_file.relative_to(self._install_directory)
+            relpath = str(target_file.relative_to(self._install_directory))
             ext = source_file.suffix
             if ext in {'.la', '.pc'} and not source_file.is_symlink():
                 # Remove references to the installation prefix and the
@@ -475,7 +515,8 @@ class TargetBuilder:
                 util.copy_file(source_file, target_file, False)
 
     def run(self, cwd, command):
-        _chdir(cwd)
+        self._io.chdir(cwd)
+        subprocess = self._io.subprocess
         subprocess.check_call([
             'env', '-i',
             'AR=' + self._tool('ar'),
@@ -490,7 +531,7 @@ class TargetBuilder:
              # List tools directory twice, as certain tools and scripts
              # get confused if PATH contains no colon.
             'PATH=%s:%s' % (self._bindir, self._bindir),
-            'PERL=' + config.PERL,
+            'PERL=' + str(self._platform(config.PERL)),
             'PKG_CONFIG=' + self._tool('pkg-config'),
             'RANLIB=' + self._tool('ranlib'),
             'STRIP=' + self._tool('strip'),
