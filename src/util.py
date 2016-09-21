@@ -278,13 +278,11 @@ def walk_files(path: PathExt) -> Iterator[PathExt]:
 
 def walk(path: PathExt) -> Iterator[Tuple[PathExt, List[PathExt],
                                           List[PathExt]]]:
-    def is_dir(p):
-        return p.is_dir()
     if path.is_dir():
         root = path
         dirs, files = tee(root.iterdir())
-        dirs = list(filter(is_dir, dirs))
-        files = list(filterfalse(is_dir, files))
+        dirs = list(filter(lambda d: d.is_dir(), dirs))
+        files = list(filter(lambda f: f.is_file(), files))
         yield root, dirs, files
         for subdir in dirs:
             yield from walk(subdir)
