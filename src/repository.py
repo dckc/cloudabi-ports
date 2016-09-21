@@ -145,6 +145,8 @@ class Repository:
         return self._distfiles.values()
 
     def get_target_packages(self) -> Dict[Tuple[str, str], TargetPackage]:
+        random = self._io_d.random
+
         # Create host packages that haven't been instantiated yet.
         # This implicitly checks for dependency loops.
         def get_host_package(name: str) -> HostPackage:
@@ -179,7 +181,6 @@ class Repository:
             return self._host_packages[name]
 
         while self._deferred_host_packages:
-            random = self._io_d.random
             get_host_package(
                 random.sample(
                     self._deferred_host_packages.keys(),
