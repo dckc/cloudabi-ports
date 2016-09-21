@@ -4,7 +4,7 @@
 # See the LICENSE file for details.
 
 from typing import (AbstractSet, Callable, Dict, Iterable, NamedTuple,
-                    Optional, Tuple)
+                    Optional, Set, Tuple)
 
 from . import config
 

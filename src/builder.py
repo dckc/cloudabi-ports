@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 class DiffCreator:
 
     def __init__(self, source_directory: PathExt,
-                 build_directory: BuildDirectory,
+                 build_directory: 'BuildDirectory',
                  filename: PathExt, subprocess: util.RunCommand) -> None:
         self._source_directory = source_directory
         self._build_directory = build_directory
@@ -48,7 +48,7 @@ Access = NamedTuple('B_Access', [
 
 class FileHandle:
 
-    def __init__(self, builder: Builder, path: PathExt, io: Access) -> None:
+    def __init__(self, builder: 'Builder', path: PathExt, io: Access) -> None:
         self._builder = builder
         self._path = path
         self._io = io
@@ -129,14 +129,14 @@ class FileHandle:
         return DiffCreator(self._path, self._builder._build_directory, filename,
                            self._io.subprocess)
 
-    def host(self) -> FileHandle:
+    def host(self) -> 'FileHandle':
         builder = cast(TargetBuilder, self._builder)
         return FileHandle(builder._host_builder, self._path, self._io)
 
-    def rename(self, dst: FileHandle) -> None:
+    def rename(self, dst: 'FileHandle') -> None:
         self._path.rename(dst._path)
 
-    def cmake(self, args: List[str]=[]) -> FileHandle:
+    def cmake(self, args: List[str]=[]) -> 'FileHandle':
         builddir = self._builder._build_directory.get_new_directory()
         self._builder.cmake(builddir, self._path, args)
         return FileHandle(self._builder, builddir, self._io)
@@ -169,7 +169,7 @@ class FileHandle:
     def open(self, mode: str) -> IO[Any]:
         return self._path.open(mode)
 
-    def path(self, path: str) -> FileHandle:
+    def path(self, path: str) -> 'FileHandle':
         return FileHandle(self._builder, self._path / path, self._io)
 
     def remove(self) -> None:
@@ -188,7 +188,7 @@ class FileHandle:
 
 class BuildHandle:
 
-    def __init__(self, builder: Builder, name: str, version: AnyVersion,
+    def __init__(self, builder: 'Builder', name: str, version: AnyVersion,
                  distfiles: Dict[str, Distfile],
                  io: Access) -> None:
         self._builder = builder
@@ -223,11 +223,11 @@ class BuildHandle:
         return 'little'
 
     def executable(self, objects: List[FileHandle]) -> FileHandle:
-        objs = sorted(obj._path for obj in objects)
+        objs = sorted(str(obj._path) for obj in objects)
         output = self._builder._build_directory.get_new_executable()
         log.info('LD %s', output)
         subprocess = self._io.subprocess
-        subprocess.check_call([self._builder.get_cc(), '-o', output] + objs)
+        subprocess.check_call([self._builder.get_cc(), '-o', str(output)] + objs)
         return FileHandle(self._builder, output, self._io)
 
     def extract(self, name='%(name)s-%(version)s'):
@@ -272,19 +272,19 @@ class BuildDirectory:
         self._sequence_number = 0
         self._builddir = platform(config.DIR_BUILDROOT) / 'build'
 
-    def get_new_archive(self):
+    def get_new_archive(self) -> PathExt:
         path = self._builddir.pathjoin('lib%d.a' % self._sequence_number)
         util.make_parent_dir(path)
         self._sequence_number += 1
         return path
 
-    def get_new_directory(self):
+    def get_new_directory(self) -> PathExt:
         path = self._builddir.pathjoin(str(self._sequence_number))
         util.make_dir(path)
         self._sequence_number += 1
         return path
 
-    def get_new_executable(self):
+    def get_new_executable(self) -> PathExt:
         path = self._builddir.pathjoin('bin%d' % self._sequence_number)
         util.make_parent_dir(path)
         self._sequence_number += 1
@@ -293,7 +293,7 @@ class BuildDirectory:
 
 class Builder:
     def __init__(self, build_directory: BuildDirectory,
-                 install_directory: PathExt, io: Access) -> None:
+                 install_directory: Optional[PathExt], io: Access) -> None:
         self._build_directory = build_directory
         self._install_directory = install_directory
         self._platform = install_directory.platform()
@@ -357,8 +357,7 @@ class HostBuilder(Builder):
         triple = subprocess.check_output(config_guess)
         return str(triple, encoding='ASCII').strip()
 
-    @staticmethod
-    def get_prefix():
+    def get_prefix(self) -> PathExt:
         return config.DIR_BUILDROOT
 
     def install(self, source: PathExt, target: PathExt) -> None:
@@ -387,7 +386,7 @@ class HostBuilder(Builder):
             'CXX=' + str(self.get_cxx()),
             'CFLAGS=' + ' '.join(self._cflags),
             'CXXFLAGS=' + ' '.join(self._cflags),
-            'LDFLAGS=-L' + self.get_prefix().pathjoin('lib'),
+            'LDFLAGS=-L' + str(self.get_prefix().pathjoin('lib')),
             'PATH=%s:%s' % (self.get_prefix().pathjoin('bin'),
                             os.getenv('PATH')),
         ] + command)

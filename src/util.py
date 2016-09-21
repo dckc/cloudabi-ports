@@ -33,48 +33,48 @@ class RunCommand(object):
 class PathExt(PathT):
     # fix lack of parameter in PurePath type decl
     # ref https://github.com/python/typeshed/issues/553
-    def pathjoin(self, *key: _SubPath) -> PathExt:   # type: ignore
+    def pathjoin(self, *key: _SubPath) -> 'PathExt':
         raise NotImplementedError
 
-    def __truediv__(self, key: _SubPath) -> PathExt:   # type: ignore
+    def __truediv__(self, key: _SubPath) -> 'PathExt':
         raise NotImplementedError
 
-    def iterdir(self) -> Iterator[PathExt]:   # type: ignore
+    def iterdir(self) -> Iterator['PathExt']:  # type: ignore
         raise NotImplementedError
 
-    def relative_to(self, *other: _SubPath) -> PathExt:   # type: ignore
+    def relative_to(self, *other: _SubPath) -> 'PathExt':
         raise NotImplementedError
 
-    def resolve(self) -> PathExt:   # type: ignore
+    def resolve(self) -> 'PathExt':
         raise NotImplementedError
 
-    def with_name(self, name: str) -> PathExt:   # type: ignore
+    def with_name(self, name: str) -> 'PathExt':   # type: ignore
         raise NotImplementedError
 
     parent = None  # type: PathExt
 
-    def __add__(self, suffix: str) -> PathExt:
+    def __add__(self, suffix: str) -> 'PathExt':
         raise NotImplementedError
 
-    def copy(self, target: PathExt):
+    def copy(self, target: PathT):
         raise NotImplementedError
 
-    def copystat(self, target: PathExt):
+    def copystat(self, target: PathT):
         raise NotImplementedError
 
-    def copymode(self, target: PathExt):
+    def copymode(self, target: PathT):
         raise NotImplementedError
 
-    def rmtree(self):
+    def rmtree(self) -> None:
         raise NotImplementedError
 
     def readlink(self) -> AnyStr:
         raise NotImplementedError
 
-    def link(self, dst: PathExt):
+    def link(self, dst: PathT):
         raise NotImplementedError
 
-    def platform(self) -> Callable[[object], PathExt]:
+    def platform(self) -> Callable[[object], 'PathExt']:
         raise NotImplementedError
 
 
@@ -235,7 +235,7 @@ def remove_and_make_dir(path: PathExt):
     make_dir(path)
 
 
-def hash_file(path: PathExt, checksum: hashlib.Hash):
+def hash_file(path: PathExt, checksum: 'hashlib.Hash'):
     if path.is_symlink():
         checksum.update(bytes(path.readlink(), encoding='ASCII'))
     else:
@@ -247,19 +247,19 @@ def hash_file(path: PathExt, checksum: hashlib.Hash):
                 checksum.update(data)
 
 
-def sha256(path: PathExt) -> hashlib.Hash:
+def sha256(path: PathExt) -> 'hashlib.Hash':
     checksum = hashlib.sha256()
     hash_file(path, checksum)
     return checksum
 
 
-def sha512(path: PathExt) -> hashlib.Hash:
+def sha512(path: PathExt) -> 'hashlib.Hash':
     checksum = hashlib.sha512()
     hash_file(path, checksum)
     return checksum
 
 
-def md5(path: PathExt) -> hashlib.Hash:
+def md5(path: PathExt) -> 'hashlib.Hash':
     checksum = hashlib.md5()
     hash_file(path, checksum)
     return checksum

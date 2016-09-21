@@ -23,8 +23,8 @@ class HostPackage:
                  io: Access,
                  name: str, version: AnyVersion,
                  homepage :str, maintainer: str,
-                 build_depends: Set[HostPackage],
-                 lib_depends: Set[HostPackage],
+                 build_depends: Set['HostPackage'],
+                 lib_depends: Set['HostPackage'],
                  distfiles: Dict[str, Distfile],
                  build_cmd: Callable[[BuildHandle], None]) -> None:
         self._install_directory = install_directory
@@ -74,7 +74,7 @@ class HostPackage:
                             self._io),
                 self._name, self._version, self._distfiles, self._io))
 
-    def extract(self):
+    def extract(self) -> None:
         # Copy files literally.
         platform = self._install_directory.platform()
         for source_file, target_file in util.walk_files_concurrently(
@@ -90,7 +90,7 @@ class TargetPackage:
                  arch: str, name: str, version: AnyVersion, homepage: str,
                  maintainer: str,
                  host_packages: Dict[str, HostPackage],
-                 lib_depends: Set[TargetPackage],
+                 lib_depends: Set['TargetPackage'],
                  build_cmd: Optional[Callable[[BuildHandle], None]],
                  distfiles: Dict[str, Distfile]) -> None:
         self._install_directory = install_directory
@@ -185,7 +185,7 @@ class TargetPackage:
     def get_homepage(self):
         return self._homepage
 
-    def get_lib_depends(self) -> Set[TargetPackage]:
+    def get_lib_depends(self) -> Set['TargetPackage']:
         return self._lib_depends
 
     def get_maintainer(self):
@@ -198,7 +198,7 @@ class TargetPackage:
         return self._version
 
     def initialize_buildroot(self, host_depends: Set[str],
-                             lib_depends: Set[TargetPackage]=set()) -> None:
+                             lib_depends: Set['TargetPackage']=set()) -> None:
         # Ensure that all dependencies have been built.
         host_deps = set()
         for dep_name in host_depends:
