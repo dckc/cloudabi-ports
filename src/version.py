@@ -3,6 +3,8 @@
 # This file is distributed under a 2-clause BSD license.
 # See the LICENSE file for details.
 
+from typing import Optional as Opt
+
 
 class AnyVersion:
     pass
@@ -10,7 +12,7 @@ class AnyVersion:
 
 class SimpleVersion(AnyVersion):
 
-    def __init__(self, version):
+    def __init__(self, version: str) -> None:
         # Turn the numbers into a list of integer values.
         self._numbers = [int(part) for part in version.split('.')]
 
@@ -30,7 +32,9 @@ class SimpleVersion(AnyVersion):
 
 class FullVersion(AnyVersion):
 
-    def __init__(self, epoch=0, version=SimpleVersion('0'), revision=1):
+    def __init__(self, epoch: Opt[int]=0,
+                 version: Opt[SimpleVersion]=SimpleVersion('0'),
+                 revision: Opt[int]=1) -> None:
         self._epoch = epoch
         self._version = version
         self._revision = revision
